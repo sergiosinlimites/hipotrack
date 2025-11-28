@@ -10,7 +10,7 @@ import { Plus, Edit, Trash2, TestTube, MapPin } from 'lucide-react';
 
 interface CameraFormProps {
   cameras: Camera[];
-  onSave: (camera: Camera) => void;
+  onSave: (camera: Omit<Camera, 'id'> & { id?: string }) => void;
   onDelete: (id: string) => void;
 }
 
@@ -74,9 +74,9 @@ export function CameraForm({ cameras, onSave, onDelete }: CameraFormProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    const camera: Camera = {
-      id: editingCamera?.id || Date.now().toString(),
+
+    const payload: Omit<Camera, 'id'> & { id?: string } = {
+      id: editingCamera?.id,
       name: formData.name || '',
       location: formData.location || '',
       type: formData.type || 'USB',
@@ -86,7 +86,7 @@ export function CameraForm({ cameras, onSave, onDelete }: CameraFormProps) {
       coordinates: formData.coordinates,
     };
 
-    onSave(camera);
+    onSave(payload);
     setIsOpen(false);
   };
 

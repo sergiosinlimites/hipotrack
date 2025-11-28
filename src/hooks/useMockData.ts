@@ -2,72 +2,53 @@ import { useState, useEffect } from 'react';
 import { Camera, Event, EnergyData, AppSettings, DataUsageEvent, DataUsageSummary, DataLimit, DataEventType } from '../types';
 
 export function useMockCameras() {
-  const [cameras, setCameras] = useState<Camera[]>([
-    {
-      id: '1',
-      name: 'Hipotrack 1',
-      location: 'Isla del silencio kilometro 1',
-      status: 'online',
-      type: 'USB',
-      url: '/dev/video0',
-      enabled: true,
-      coordinates: { lat: -34.6037, lng: -58.3816 },
-    },
-    {
-      id: '2',
-      name: 'Hipotrack 2',
-      location: 'Isla del silencio kilometro 3',
-      status: 'online',
-      type: 'RTSP',
-      url: 'rtsp://192.168.1.100:554/stream',
-      enabled: true,
-      coordinates: { lat: -34.6050, lng: -58.3850 },
-    },
-    {
-      id: '3',
-      name: 'Almacén',
-      location: 'Isla del silencio kilometro 4',
-      status: 'waiting',
-      type: 'CSI',
-      url: '/dev/csi0',
-      enabled: true,
-      coordinates: { lat: -34.6070, lng: -58.3900 },
-    },
-    {
-      id: '4',
-      name: 'Isla del silencio kilometro 5',
-      location: 'Planta Alta - Centro',
-      status: 'disabled',
-      type: 'USB',
-      url: '/dev/video1',
-      enabled: false,
-      coordinates: { lat: -34.6100, lng: -58.3950 },
-    },
-  ]);
+  const [cameras, setCameras] = useState<Camera[]>([]);
+
+  useEffect(() => {
+    const fetchCameras = async () => {
+      try {
+        const res = await fetch('/api/cameras');
+        if (!res.ok) throw new Error('Error fetching cameras');
+        const data = await res.json();
+        setCameras(data);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('useMockCameras error', err);
+      }
+    };
+
+    fetchCameras();
+  }, []);
 
   return { cameras, setCameras };
 }
 
 export function useMockEvents() {
-  const [events] = useState<Event[]>(() => {
-    const mockEvents: Event[] = [];
-    const cameraNames = ['Isla del silencio kilometro 1', 'Isla del silencio kilometro 3', 'Isla del silencio kilometro 4', 'Isla del silencio kilometro 5'];
-    const cameraIds = ['1', '2', '3', '4'];
-    
-    for (let i = 0; i < 20; i++) {
-      const randomCamera = Math.floor(Math.random() * cameraNames.length);
-      mockEvents.push({
-        id: `event-${i}`,
-        cameraId: cameraIds[randomCamera],
-        cameraName: cameraNames[randomCamera],
-        timestamp: new Date(Date.now() - Math.random() * 24 * 60 * 60 * 1000),
-        thumbnail: '',
-        imageUrl: '',
-      });
-    }
-    
-    return mockEvents.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-  });
+  const [events, setEvents] = useState<Event[]>([]);
+
+  useEffect(() => {
+    const fetchEvents = async () => {
+      try {
+        const res = await fetch('/api/events');
+        if (!res.ok) throw new Error('Error fetching events');
+        const data = await res.json();
+        const mapped: Event[] = data.map((e: any) => ({
+          id: e.id,
+          cameraId: e.cameraId,
+          cameraName: e.cameraName,
+          timestamp: new Date(e.timestamp),
+          thumbnail: e.thumbnail,
+          imageUrl: e.imageUrl,
+        }));
+        setEvents(mapped);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('useMockEvents error', err);
+      }
+    };
+
+    fetchEvents();
+  }, []);
 
   return events;
 }

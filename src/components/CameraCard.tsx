@@ -1,12 +1,13 @@
-import { Video, MapPin, Clock } from 'lucide-react';
+import React from 'react';
+import { Video, MapPin, Camera as CameraIcon } from 'lucide-react';
 import { Camera } from '../types';
 import { Button } from './ui/button';
 import { ImageWithFallback } from './figma/ImageWithFallback';
 
 interface CameraCardProps {
   camera: Camera;
-  onViewLive: (camera: Camera) => void;
-  onViewHistory: (camera: Camera) => void;
+  onRequestStream: (camera: Camera) => void;
+  onRequestPhoto: (camera: Camera) => void;
 }
 
 const statusColors = {
@@ -27,7 +28,7 @@ const statusLabels = {
   disabled: 'Deshabilitada',
 };
 
-export function CameraCard({ camera, onViewLive, onViewHistory }: CameraCardProps) {
+export function CameraCard({ camera, onRequestStream, onRequestPhoto }: CameraCardProps) {
   return (
     <div className={`border rounded-lg overflow-hidden ${statusColors[camera.status]}`}>
       {/* Thumbnail */}
@@ -57,21 +58,21 @@ export function CameraCard({ camera, onViewLive, onViewHistory }: CameraCardProp
         <div className="flex gap-2">
           <Button
             size="sm"
-            onClick={() => onViewLive(camera)}
+            onClick={() => onRequestStream(camera)}
             disabled={camera.status === 'disabled'}
             className="flex-1"
           >
             <Video className="size-3 mr-1" />
-            Ver en vivo
+            Ver video
           </Button>
           <Button
             size="sm"
             variant="outline"
-            onClick={() => onViewHistory(camera)}
+            onClick={() => onRequestPhoto(camera)}
             className="flex-1"
           >
-            <Clock className="size-3 mr-1" />
-            Registro
+            <CameraIcon className="size-3 mr-1" />
+            Tomar foto
           </Button>
         </div>
       </div>

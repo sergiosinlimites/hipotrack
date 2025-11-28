@@ -4,6 +4,7 @@ const fs = require('fs');
 const http = require('http');
 const multer = require('multer');
 const WebSocket = require('ws');
+const { AppDataSource } = require('./db/data-source');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,11 +15,7 @@ const server = http.createServer(app);
 // Middlewares
 app.use(express.json({ limit: '10mb' }));
 
-// In-memory stores for demo / development.
-// TODO: Replace with a real database if needed.
-const cameras = new Map();
-const events = [];
-const energySamples = [];
+// In-memory stores for demo / development (non-persistent).
 const latestFrames = new Map(); // cameraId -> { buffer, timestamp }
 const cameraActions = new Map(); // cameraId -> { photoRequested?: boolean, photoRequestedAt?: number, streamUntil?: number }
 
@@ -28,88 +25,126 @@ app.get('/api/health', (_req, res) => {
 });
 
 // Register or update a camera status from a Raspberry Pi
-app.post('/api/cameras/:cameraId/status', (req, res) => {
-  const { cameraId } = req.params;
-  const {
-    name,
-    location,
-    status,
-    type,
-    url,
-    enabled = true,
-    coordinates,
-  } = req.body || {};
+app.post('/api/cameras/:cameraId/status', async (req, res) => {
+  try {
+    const cameraRepo = AppDataSource.getRepository('Camera');
+    const { cameraId } = req.params;
+    const {
+      name,
+      location,
+      status,
+      type,
+      url,
+      enabled = true,
+      coordinates,
+    } = req.body || {};
 
-  if (!status || !type) {
-    return res.status(400).json({ error: 'Missing required fields: status, type' });
+    if (!status || !type) {
+      return res.status(400).json({ error: 'Missing required fields: status, type' });
+    }
+
+    let camera = await cameraRepo.findOne({ where: { id: cameraId } });
+
+    if (!camera) {
+      camera = cameraRepo.create({
+        id: cameraId,
+        name: name || `Camera ${cameraId}`,
+        location: location || '',
+        status,
+        type,
+        url: url || '',
+        enabled,
+        coordinates,
+        last_seen_at: new Date(),
+      });
+    } else {
+      camera.name = name || camera.name;
+      camera.location = location || camera.location;
+      camera.status = status;
+      camera.type = type;
+      camera.url = url || camera.url;
+      camera.enabled = enabled;
+      camera.coordinates = coordinates || camera.coordinates;
+      camera.last_seen_at = new Date();
+    }
+
+    const saved = await cameraRepo.save(camera);
+
+    res.json({ ok: true, camera: saved });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error updating camera status', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
-
-  const camera = {
-    id: cameraId,
-    name: name || `Camera ${cameraId}`,
-    location: location || '',
-    status,
-    type,
-    url: url || '',
-    enabled,
-    coordinates,
-    lastSeenAt: new Date().toISOString(),
-  };
-
-  cameras.set(cameraId, camera);
-
-  res.json({ ok: true, camera });
 });
 
-// Receive an event (e.g. detection, photo captured) from a Raspberry Pi
-app.post('/api/cameras/:cameraId/events', (req, res) => {
-  const { cameraId } = req.params;
-  const { eventType = 'detection', thumbnail, imageUrl } = req.body || {};
+// Receive an event (generic) from a Raspberry Pi
+app.post('/api/cameras/:cameraId/events', async (req, res) => {
+  try {
+    const eventRepo = AppDataSource.getRepository('Event');
+    const cameraRepo = AppDataSource.getRepository('Camera');
+    const { cameraId } = req.params;
+    const { eventType = 'detection', payload = {} } = req.body || {};
 
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const camera = await cameraRepo.findOne({ where: { id: cameraId } });
 
-  const event = {
-    id,
-    cameraId,
-    eventType,
-    thumbnail: thumbnail || '',
-    imageUrl: imageUrl || '',
-    timestamp: new Date().toISOString(),
-  };
+    const event = eventRepo.create({
+      type: eventType,
+      payload,
+      camera,
+    });
 
-  events.push(event);
+    const saved = await eventRepo.save(event);
 
-  res.status(201).json({ ok: true, event });
+    res.status(201).json({ ok: true, event: saved });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error receiving event', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Receive energy / telemetry data from a Raspberry Pi
-app.post('/api/cameras/:cameraId/energy', (req, res) => {
-  const { cameraId } = req.params;
-  const { voltage, current, watts, cpuTemp } = req.body || {};
+app.post('/api/cameras/:cameraId/energy', async (req, res) => {
+  try {
+    const energyRepo = AppDataSource.getRepository('EnergySample');
+    const cameraRepo = AppDataSource.getRepository('Camera');
+    const { cameraId } = req.params;
+    const { voltage, current, watts, cpuTemp } = req.body || {};
 
-  if (
-    typeof voltage !== 'number' ||
-    typeof current !== 'number' ||
-    typeof watts !== 'number' ||
-    typeof cpuTemp !== 'number'
-  ) {
-    return res.status(400).json({
-      error: 'voltage, current, watts and cpuTemp must be numbers',
+    if (
+      typeof voltage !== 'number' ||
+      typeof current !== 'number' ||
+      typeof watts !== 'number' ||
+      typeof cpuTemp !== 'number'
+    ) {
+      return res.status(400).json({
+        error: 'voltage, current, watts and cpuTemp must be numbers',
+      });
+    }
+
+    const camera = await cameraRepo.findOne({ where: { id: cameraId } });
+    if (!camera) {
+      return res.status(404).json({ error: 'Camera not found' });
+    }
+
+    const sample = energyRepo.create({
+      voltage,
+      current,
+      watts,
+      cpu_temp: cpuTemp,
+      measured_at: new Date(),
+      camera,
     });
+
+    const saved = await energyRepo.save(sample);
+
+    res.status(201).json({ ok: true, sample: saved });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error receiving energy data', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
-
-  const sample = {
-    cameraId,
-    voltage,
-    current,
-    watts,
-    cpuTemp,
-    timestamp: new Date().toISOString(),
-  };
-
-  energySamples.push(sample);
-
-  res.status(201).json({ ok: true, sample });
 });
 
 // Configure storage for photo uploads
@@ -137,32 +172,54 @@ const upload = multer({
 
 // Endpoint para que la Raspberry envíe una foto puntual (snapshot)
 // POST /api/cameras/:cameraId/photo  (multipart/form-data, campo "image")
-app.post('/api/cameras/:cameraId/photo', upload.single('image'), (req, res) => {
-  const { cameraId } = req.params;
+app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res) => {
+  try {
+    const photoRepo = AppDataSource.getRepository('Photo');
+    const cameraRepo = AppDataSource.getRepository('Camera');
+    const eventRepo = AppDataSource.getRepository('Event');
 
-  if (!req.file) {
-    return res.status(400).json({ error: 'Missing image file in "image" field' });
+    const { cameraId } = req.params;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'Missing image file in "image" field' });
+    }
+
+    const camera = await cameraRepo.findOne({ where: { id: cameraId } });
+
+    const relativeUrl = `/uploads/${cameraId}/${req.file.filename}`;
+
+    // Guardar la foto en la base de datos
+    const photo = photoRepo.create({
+      image_path: relativeUrl,
+      thumbnail_path: relativeUrl,
+      trigger_source: 'device',
+      captured_at: new Date(),
+      camera,
+    });
+    const savedPhoto = await photoRepo.save(photo);
+
+    // Registrar un evento asociado a esta foto
+    const event = eventRepo.create({
+      type: 'photo',
+      payload: {
+        image_path: relativeUrl,
+        photo_id: savedPhoto.id,
+      },
+      camera,
+    });
+    const savedEvent = await eventRepo.save(event);
+
+    res.status(201).json({
+      ok: true,
+      imageUrl: relativeUrl,
+      photo: savedPhoto,
+      event: savedEvent,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error receiving photo', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
-
-  const relativeUrl = `/uploads/${cameraId}/${req.file.filename}`;
-
-  // Opcional: registrar un evento asociado a esta foto
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const event = {
-    id,
-    cameraId,
-    eventType: 'photo',
-    thumbnail: relativeUrl,
-    imageUrl: relativeUrl,
-    timestamp: new Date().toISOString(),
-  };
-  events.push(event);
-
-  res.status(201).json({
-    ok: true,
-    imageUrl: relativeUrl,
-    event,
-  });
 });
 
 // Endpoint HTTP para obtener el último frame "en vivo" de una cámara como imagen JPEG
@@ -251,14 +308,178 @@ app.get('/api/camera/:cameraId/take-photo-or-video', (req, res) => {
   });
 });
 
-// Simple endpoints for the frontend to read current state (for future integration)
-app.get('/api/cameras', (_req, res) => {
-  res.json(Array.from(cameras.values()));
+// Simple endpoints for the frontend to read current state
+app.get('/api/cameras', async (_req, res) => {
+  try {
+    const cameraRepo = AppDataSource.getRepository('Camera');
+    const cameras = await cameraRepo.find({ order: { created_at: 'ASC' } });
+    res.json(cameras);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error listing cameras', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-app.get('/api/cameras/:cameraId/events', (req, res) => {
-  const { cameraId } = req.params;
-  res.json(events.filter((e) => e.cameraId === cameraId));
+// Create a camera (e.g. from the frontend config screen)
+app.post('/api/cameras', async (req, res) => {
+  try {
+    const cameraRepo = AppDataSource.getRepository('Camera');
+    const {
+      id,
+      name,
+      location,
+      status = 'waiting',
+      type = 'USB',
+      url = '',
+      enabled = true,
+      thumbnail = null,
+      coordinates = null,
+    } = req.body || {};
+
+    const cameraId = id || Date.now().toString();
+
+    const camera = cameraRepo.create({
+      id: cameraId,
+      name: name || `Camera ${cameraId}`,
+      location: location || '',
+      status,
+      type,
+      url,
+      enabled,
+      thumbnail,
+      coordinates,
+      last_seen_at: null,
+    });
+
+    const saved = await cameraRepo.save(camera);
+    res.status(201).json(saved);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error creating camera', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update camera configuration
+app.put('/api/cameras/:cameraId', async (req, res) => {
+  try {
+    const cameraRepo = AppDataSource.getRepository('Camera');
+    const { cameraId } = req.params;
+    const {
+      name,
+      location,
+      status,
+      type,
+      url,
+      enabled,
+      thumbnail,
+      coordinates,
+    } = req.body || {};
+
+    const camera = await cameraRepo.findOne({ where: { id: cameraId } });
+    if (!camera) {
+      return res.status(404).json({ error: 'Camera not found' });
+    }
+
+    if (typeof name === 'string') camera.name = name;
+    if (typeof location === 'string') camera.location = location;
+    if (typeof status === 'string') camera.status = status;
+    if (typeof type === 'string') camera.type = type;
+    if (typeof url === 'string') camera.url = url;
+    if (typeof enabled === 'boolean') camera.enabled = enabled;
+    if (typeof thumbnail === 'string' || thumbnail === null) camera.thumbnail = thumbnail;
+    if (coordinates !== undefined) camera.coordinates = coordinates;
+
+    const saved = await cameraRepo.save(camera);
+    res.json(saved);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error updating camera', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete camera
+app.delete('/api/cameras/:cameraId', async (req, res) => {
+  try {
+    const cameraRepo = AppDataSource.getRepository('Camera');
+    const { cameraId } = req.params;
+
+    const camera = await cameraRepo.findOne({ where: { id: cameraId } });
+    if (!camera) {
+      return res.status(404).json({ error: 'Camera not found' });
+    }
+
+    await cameraRepo.remove(camera);
+    res.status(204).send();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error deleting camera', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Events (photo history) for a given camera
+app.get('/api/cameras/:cameraId/events', async (req, res) => {
+  try {
+    const { cameraId } = req.params;
+    const photoRepo = AppDataSource.getRepository('Photo');
+    const cameraRepo = AppDataSource.getRepository('Camera');
+
+    const camera = await cameraRepo.findOne({ where: { id: cameraId } });
+    if (!camera) {
+      return res.status(404).json({ error: 'Camera not found' });
+    }
+
+    const photos = await photoRepo.find({
+      where: { camera: { id: cameraId } },
+      order: { captured_at: 'DESC' },
+      relations: ['camera'],
+    });
+
+    const events = photos.map((p) => ({
+      id: p.id,
+      cameraId,
+      cameraName: p.camera.name,
+      timestamp: p.captured_at,
+      thumbnail: p.thumbnail_path || p.image_path,
+      imageUrl: p.image_path,
+    }));
+
+    res.json(events);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error listing camera events', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Global events feed (for the Events view)
+app.get('/api/events', async (_req, res) => {
+  try {
+    const photoRepo = AppDataSource.getRepository('Photo');
+    const photos = await photoRepo.find({
+      relations: ['camera'],
+      order: { captured_at: 'DESC' },
+      take: 200,
+    });
+
+    const events = photos.map((p) => ({
+      id: p.id,
+      cameraId: p.camera.id,
+      cameraName: p.camera.name,
+      timestamp: p.captured_at,
+      thumbnail: p.thumbnail_path || p.image_path,
+      imageUrl: p.image_path,
+    }));
+
+    res.json(events);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error listing events', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // WebSocket server para streaming ligero de frames desde la Raspberry
@@ -302,9 +523,20 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(clientBuildPath, 'index.html'));
 });
 
-server.listen(PORT, () => {
-  // eslint-disable-next-line no-console
-  console.log(`Server listening on port ${PORT}`);
-});
+// Start the HTTP + WebSocket server only after the database is ready
+AppDataSource.initialize()
+  .then(() => {
+    // eslint-disable-next-line no-console
+    console.log('Database connection established');
+    server.listen(PORT, () => {
+      // eslint-disable-next-line no-console
+      console.log(`Server listening on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('Failed to initialize database', err);
+    process.exit(1);
+  });
 
 

@@ -82,17 +82,25 @@ export function StreamingModal({ camera, isOpen, onClose, timeout }: StreamingMo
           </div>
 
           {/* Info bar */}
-          <div className="flex items-center justify-between text-sm text-gray-600">
-            <div className="flex items-center gap-4">
-              <span>Resolución: 640x480</span>
-              <span>FPS: 10</span>
-              <span>Bitrate: 0.5 Mbps</span>
+          <div className="space-y-2 text-sm text-gray-600">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <span>Resolución estimada: 640x480</span>
+                <span>FPS objetivo: 1-3</span>
+              </div>
+
+              <div className="flex items-center gap-2 text-amber-600">
+                <AlertCircle className="size-4" />
+                <span>
+                  Cierre automático en {minutes}:{seconds.toString().padStart(2, '0')}
+                </span>
+              </div>
             </div>
-            
-            <div className="flex items-center gap-2 text-amber-600">
-              <AlertCircle className="size-4" />
-              <span>Cierre automático en {minutes}:{seconds.toString().padStart(2, '0')}</span>
-            </div>
+
+            <p className="text-xs text-gray-600">
+              Se ha solicitado video en vivo a la cámara. El inicio del streaming puede tardar hasta 1 minuto
+              mientras la Raspberry establece la conexión por datos móviles.
+            </p>
           </div>
         </div>
       </DialogContent>

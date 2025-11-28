@@ -3,11 +3,11 @@ import { CameraCard } from './CameraCard';
 
 interface CameraGridProps {
   cameras: Camera[];
-  onViewLive: (camera: Camera) => void;
-  onViewHistory: (camera: Camera) => void;
+  onRequestStream: (camera: Camera) => void;
+  onRequestPhoto: (camera: Camera) => void;
 }
 
-export function CameraGrid({ cameras, onViewLive, onViewHistory }: CameraGridProps) {
+export function CameraGrid({ cameras, onRequestStream, onRequestPhoto }: CameraGridProps) {
   return (
     <div>
       <div className="mb-6">
@@ -22,8 +22,8 @@ export function CameraGrid({ cameras, onViewLive, onViewHistory }: CameraGridPro
           <CameraCard
             key={camera.id}
             camera={camera}
-            onViewLive={onViewLive}
-            onViewHistory={onViewHistory}
+            onRequestStream={onRequestStream}
+            onRequestPhoto={onRequestPhoto}
           />
         ))}
       </div>
