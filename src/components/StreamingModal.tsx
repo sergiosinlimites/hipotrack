@@ -15,6 +15,7 @@ interface StreamingModalProps {
 export function StreamingModal({ camera, isOpen, onClose, timeout }: StreamingModalProps) {
   const [timeLeft, setTimeLeft] = useState(timeout * 60);
   const lastActivityRef = useRef(Date.now());
+  const [frameTick, setFrameTick] = useState(0);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -50,10 +51,27 @@ export function StreamingModal({ camera, isOpen, onClose, timeout }: StreamingMo
     };
   }, [isOpen, timeout, onClose]);
 
+  // Actualizar el frame de video periódicamente mientras el modal esté abierto
+  useEffect(() => {
+    if (!isOpen || !camera) return;
+
+    setFrameTick(0);
+    const interval = setInterval(() => {
+      setFrameTick((prev) => prev + 1);
+    }, 2000); // cada 2 segundos
+
+    return () => clearInterval(interval);
+  }, [isOpen, camera]);
+
   if (!camera) return null;
 
   const minutes = Math.floor(timeLeft / 60);
   const seconds = timeLeft % 60;
+
+  const streamSrc =
+    camera && isOpen
+      ? `/api/cameras/${camera.id}/live-frame?ts=${frameTick}`
+      : 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&q=60';
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -70,11 +88,7 @@ export function StreamingModal({ camera, isOpen, onClose, timeout }: StreamingMo
         <div className="space-y-4">
           {/* Stream viewer */}
           <div className="bg-gray-900 rounded-lg overflow-hidden aspect-video relative">
-            <ImageWithFallback
-              src="https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&q=60"
-              alt="Live stream"
-              className="w-full h-full object-cover"
-            />
+            <ImageWithFallback src={streamSrc} alt="Live stream" className="w-full h-full object-cover" />
             <div className="absolute top-4 left-4 bg-red-600 px-3 py-1 rounded-full flex items-center gap-2">
               <div className="size-2 rounded-full bg-white animate-pulse" />
               <span className="text-white text-sm">EN VIVO</span>

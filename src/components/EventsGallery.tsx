@@ -14,7 +14,9 @@ export function EventsGallery({ events }: EventsGalleryProps) {
   const [selectedCamera, setSelectedCamera] = useState<string>('all');
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
 
-  const uniqueCameras = Array.from(new Set(events.map(e => e.cameraName)));
+  const uniqueCameras = Array.from(
+    new Map(events.map((e) => [e.cameraId, e.cameraName])).entries()
+  ).map(([id, name]) => ({ id, name }));
 
   const filteredEvents = selectedCamera === 'all' 
     ? events 
@@ -35,9 +37,9 @@ export function EventsGallery({ events }: EventsGalleryProps) {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">Todas las cámaras</SelectItem>
-            {uniqueCameras.map((camera, index) => (
-              <SelectItem key={index} value={String(index + 1)}>
-                {camera}
+            {uniqueCameras.map((camera) => (
+              <SelectItem key={camera.id} value={camera.id}>
+                {camera.name}
               </SelectItem>
             ))}
           </SelectContent>
@@ -54,7 +56,7 @@ export function EventsGallery({ events }: EventsGalleryProps) {
           >
             <div className="aspect-video bg-gray-900 rounded overflow-hidden mb-2 relative">
               <ImageWithFallback
-                src="https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=200&q=50"
+                src={event.thumbnail || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=200&q=50'}
                 alt={event.cameraName}
                 className="w-full h-full object-cover group-hover:opacity-75 transition-opacity"
               />
@@ -95,7 +97,7 @@ export function EventsGallery({ events }: EventsGalleryProps) {
               
               <div className="bg-gray-900 rounded-lg overflow-hidden">
                 <ImageWithFallback
-                  src="https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=1200&q=80"
+                  src={selectedEvent.imageUrl || selectedEvent.thumbnail}
                   alt="Event"
                   className="w-full h-auto"
                 />

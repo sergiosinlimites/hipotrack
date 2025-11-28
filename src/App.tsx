@@ -3,14 +3,21 @@ import { Sidebar } from './components/Sidebar';
 import { ConnectionBanner } from './components/ConnectionBanner';
 import { CameraGrid } from './components/CameraGrid';
 import { StreamingModal } from './components/StreamingModal';
+import { PhotoCaptureModal } from './components/PhotoCaptureModal';
 import { EventsGallery } from './components/EventsGallery';
 import { EnergyPanel } from './components/EnergyPanel';
 import { DataPanel } from './components/DataPanel';
 import { MapView } from './components/MapView';
 import { CameraForm } from './components/CameraForm';
 import { SettingsPanel } from './components/SettingsPanel';
-import { useMockCameras, useMockEvents, useMockEnergyData, useMockSettings, useMockDataUsage } from './hooks/useMockData';
-import { Camera } from './types';
+import {
+  useMockCameras,
+  useMockEvents,
+  useMockEnergyData,
+  useMockSettings,
+  useMockDataUsage,
+} from './hooks/useMockData';
+import { Camera, Event } from './types';
 
 type View = 'cameras' | 'events' | 'energy' | 'data' | 'map' | 'config' | 'settings';
 
@@ -18,9 +25,11 @@ export default function App() {
   const [currentView, setCurrentView] = useState('cameras' as View);
   const [isConnected, setIsConnected] = useState(true);
   const [streamingCamera, setStreamingCamera] = useState(null as Camera | null);
+  const [photoCamera, setPhotoCamera] = useState(null as Camera | null);
+  const [photoImageUrl, setPhotoImageUrl] = useState(null as string | null);
 
   const { cameras, setCameras } = useMockCameras();
-  const events = useMockEvents();
+  const { events, setEvents } = useMockEvents();
   const { currentData, energyHistory } = useMockEnergyData();
   const { settings, setSettings } = useMockSettings();
   const { summary, dataLimit, setDataLimit } = useMockDataUsage();
@@ -109,15 +118,72 @@ export default function App() {
       });
       if (!res.ok) throw new Error('Error al solicitar foto');
 
-      alert(
-        'Se ha solicitado una foto a la cámara. Puede tardar hasta 1 minuto en que la Raspberry capture y envíe la imagen al servidor.'
-      );
+      setPhotoCamera(camera);
+      setPhotoImageUrl(null);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('handleRequestPhoto error', err);
       alert('No se pudo solicitar la foto. Revisa la consola del navegador.');
     }
   };
+
+  // WebSocket de eventos (fotos) para actualizaciones en tiempo (casi) real
+  useEffect(() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl =
+      process.env.NODE_ENV !== 'production' && window.location.hostname === 'localhost'
+        ? `${protocol}://localhost:3001/ws/events`
+        : `${protocol}://${window.location.host}/ws/events`;
+
+    const ws = new WebSocket(wsUrl);
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          type: string;
+          id: string;
+          cameraId: string;
+          cameraName: string;
+          timestamp: string;
+          imageUrl: string;
+          thumbnail?: string;
+        };
+
+        if (data.type === 'photo') {
+          const evt: Event = {
+            id: data.id,
+            cameraId: data.cameraId,
+            cameraName: data.cameraName,
+            timestamp: new Date(data.timestamp),
+            thumbnail: data.thumbnail || data.imageUrl,
+            imageUrl: data.imageUrl,
+          };
+
+          // Actualizar lista de eventos
+          setEvents((prev) => [evt, ...prev]);
+
+          // Actualizar thumbnail de la cámara
+          setCameras((prev) =>
+            prev.map((c) =>
+              c.id === data.cameraId ? { ...c, thumbnail: data.thumbnail || data.imageUrl } : c
+            )
+          );
+
+          // Si el modal de foto está abierto para esa cámara, mostrar la imagen
+          if (photoCamera && photoCamera.id === data.cameraId) {
+            setPhotoImageUrl(data.imageUrl);
+          }
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('Error parsing WS event', err);
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, [setCameras, setEvents, photoCamera]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
@@ -166,6 +232,13 @@ export default function App() {
         isOpen={!!streamingCamera}
         onClose={() => setStreamingCamera(null)}
         timeout={settings.streamTimeout}
+      />
+
+      <PhotoCaptureModal
+        camera={photoCamera}
+        isOpen={!!photoCamera}
+        onClose={() => setPhotoCamera(null)}
+        imageUrl={photoImageUrl}
       />
     </div>
   );

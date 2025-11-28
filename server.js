@@ -170,6 +170,14 @@ const upload = multer({
   },
 });
 
+// Multer en memoria para frames de streaming (no queremos escribirlos a disco)
+const memoryUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 500 * 1024, // 500KB por frame debería ser suficiente
+  },
+});
+
 // Endpoint para que la Raspberry envíe una foto puntual (snapshot)
 // POST /api/cameras/:cameraId/photo  (multipart/form-data, campo "image")
 app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res) => {
@@ -185,6 +193,9 @@ app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res
     }
 
     const camera = await cameraRepo.findOne({ where: { id: cameraId } });
+    if (!camera) {
+      return res.status(404).json({ error: 'Camera not found' });
+    }
 
     const relativeUrl = `/uploads/${cameraId}/${req.file.filename}`;
 
@@ -198,9 +209,14 @@ app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res
     });
     const savedPhoto = await photoRepo.save(photo);
 
+    // Actualizar thumbnail de la cámara con la última foto
+    camera.thumbnail = relativeUrl;
+    await cameraRepo.save(camera);
+
     // Registrar un evento asociado a esta foto
     const event = eventRepo.create({
       type: 'photo',
+      filepath: relativeUrl,
       payload: {
         image_path: relativeUrl,
         photo_id: savedPhoto.id,
@@ -208,6 +224,17 @@ app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res
       camera,
     });
     const savedEvent = await eventRepo.save(event);
+
+    // Notificar a los clientes frontend por WebSocket
+    broadcastEvent({
+      type: 'photo',
+      id: savedEvent.id,
+      cameraId: camera.id,
+      cameraName: camera.name,
+      timestamp: savedEvent.created_at || new Date(),
+      imageUrl: relativeUrl,
+      thumbnail: relativeUrl,
+    });
 
     res.status(201).json({
       ok: true,
@@ -222,8 +249,47 @@ app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res
   }
 });
 
-// Endpoint HTTP para obtener el último frame "en vivo" de una cámara como imagen JPEG
-// Esto permite que el frontend haga polling si aún no se quiere usar WebSockets en el navegador.
+// Última foto registrada para una cámara
+app.get('/api/cameras/:cameraId/latest-photo', async (req, res) => {
+  try {
+    const { cameraId } = req.params;
+    const photoRepo = AppDataSource.getRepository('Photo');
+    const cameraRepo = AppDataSource.getRepository('Camera');
+
+    const camera = await cameraRepo.findOne({ where: { id: cameraId } });
+    if (!camera) {
+      return res.status(404).json({ error: 'Camera not found' });
+    }
+
+    const photo = await photoRepo.findOne({
+      where: { camera: { id: cameraId } },
+      order: { captured_at: 'DESC' },
+      relations: ['camera'],
+    });
+
+    if (!photo) {
+      return res.status(404).json({ error: 'No photos for this camera' });
+    }
+
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+    res.json({
+      id: photo.id,
+      cameraId: camera.id,
+      cameraName: camera.name,
+      imageUrl: photo.image_path,
+      thumbnail: photo.thumbnail_path || photo.image_path,
+      capturedAt: photo.captured_at,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error fetching latest photo', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Endpoint HTTP para obtener el último frame "en vivo" de una cámara como imagen JPEG.
+// Solo devuelve frames provenientes del streaming; si no hay ninguno, responde 404.
 app.get('/api/cameras/:cameraId/live-frame', (req, res) => {
   const { cameraId } = req.params;
   const frame = latestFrames.get(cameraId);
@@ -235,6 +301,23 @@ app.get('/api/cameras/:cameraId/live-frame', (req, res) => {
   res.setHeader('Content-Type', 'image/jpeg');
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.send(frame.buffer);
+});
+
+// Endpoint para recibir frames de streaming vía HTTP (alternativa al WebSocket).
+// POST /api/cameras/:cameraId/live-frame  (multipart/form-data, campo "image")
+app.post('/api/cameras/:cameraId/live-frame', memoryUpload.single('image'), (req, res) => {
+  const { cameraId } = req.params;
+
+  if (!req.file || !req.file.buffer) {
+    return res.status(400).json({ error: 'Missing image file in "image" field' });
+  }
+
+  latestFrames.set(cameraId, {
+    buffer: req.file.buffer,
+    timestamp: Date.now(),
+  });
+
+  return res.json({ ok: true });
 });
 
 // ----------------------------
@@ -424,30 +507,24 @@ app.delete('/api/cameras/:cameraId', async (req, res) => {
 app.get('/api/cameras/:cameraId/events', async (req, res) => {
   try {
     const { cameraId } = req.params;
-    const photoRepo = AppDataSource.getRepository('Photo');
-    const cameraRepo = AppDataSource.getRepository('Camera');
+    const eventRepo = AppDataSource.getRepository('Event');
 
-    const camera = await cameraRepo.findOne({ where: { id: cameraId } });
-    if (!camera) {
-      return res.status(404).json({ error: 'Camera not found' });
-    }
-
-    const photos = await photoRepo.find({
-      where: { camera: { id: cameraId } },
-      order: { captured_at: 'DESC' },
+    const events = await eventRepo.find({
+      where: { type: 'photo', camera: { id: cameraId } },
       relations: ['camera'],
+      order: { created_at: 'DESC' },
     });
 
-    const events = photos.map((p) => ({
-      id: p.id,
-      cameraId,
-      cameraName: p.camera.name,
-      timestamp: p.captured_at,
-      thumbnail: p.thumbnail_path || p.image_path,
-      imageUrl: p.image_path,
+    const mapped = events.map((e) => ({
+      id: e.id,
+      cameraId: e.camera ? e.camera.id : '',
+      cameraName: e.camera ? e.camera.name : 'Sin cámara',
+      timestamp: e.created_at,
+      thumbnail: e.filepath || (e.payload && e.payload.image_path) || '',
+      imageUrl: e.filepath || (e.payload && e.payload.image_path) || '',
     }));
 
-    res.json(events);
+    res.json(mapped);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('Error listing camera events', err);
@@ -458,23 +535,24 @@ app.get('/api/cameras/:cameraId/events', async (req, res) => {
 // Global events feed (for the Events view)
 app.get('/api/events', async (_req, res) => {
   try {
-    const photoRepo = AppDataSource.getRepository('Photo');
-    const photos = await photoRepo.find({
+    const eventRepo = AppDataSource.getRepository('Event');
+    const events = await eventRepo.find({
+      where: { type: 'photo' },
       relations: ['camera'],
-      order: { captured_at: 'DESC' },
+      order: { created_at: 'DESC' },
       take: 200,
     });
 
-    const events = photos.map((p) => ({
-      id: p.id,
-      cameraId: p.camera.id,
-      cameraName: p.camera.name,
-      timestamp: p.captured_at,
-      thumbnail: p.thumbnail_path || p.image_path,
-      imageUrl: p.image_path,
+    const mapped = events.map((e) => ({
+      id: e.id,
+      cameraId: e.camera ? e.camera.id : '',
+      cameraName: e.camera ? e.camera.name : 'Sin cámara',
+      timestamp: e.created_at,
+      thumbnail: e.filepath || (e.payload && e.payload.image_path) || '',
+      imageUrl: e.filepath || (e.payload && e.payload.image_path) || '',
     }));
 
-    res.json(events);
+    res.json(mapped);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('Error listing events', err);
@@ -485,7 +563,24 @@ app.get('/api/events', async (_req, res) => {
 // WebSocket server para streaming ligero de frames desde la Raspberry
 // La Raspberry se conecta a: ws://<host>/ws/camera-stream?cameraId=cam-01
 // y envía frames JPEG ya comprimidos (binary).
-const wss = new WebSocket.Server({ server, path: '/ws/camera-stream' });
+const wss = new WebSocket.Server({
+  server,
+  path: '/ws/camera-stream',
+  maxPayload: 50 * 1024 * 1024,
+  perMessageDeflate: false,
+});
+
+// WebSocket server para eventos hacia el frontend (fotos, etc.)
+const eventsWss = new WebSocket.Server({ server, path: '/ws/events' });
+
+const broadcastEvent = (payload) => {
+  const data = JSON.stringify(payload);
+  eventsWss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data);
+    }
+  });
+};
 
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -496,18 +591,39 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  ws.on('message', (data) => {
-    // Esperamos buffers binarios con contenido JPEG ya comprimido
-    if (Buffer.isBuffer(data)) {
-      latestFrames.set(cameraId, {
-        buffer: data,
-        timestamp: Date.now(),
-      });
-    }
+  // eslint-disable-next-line no-console
+  console.log('[WS] Nueva conexión de streaming para cámara', cameraId);
+
+  ws.on('message', (data, isBinary) => {
+    // Aceptamos tanto binario puro como texto y lo convertimos siempre a Buffer
+    const buffer = isBinary || Buffer.isBuffer(data) ? data : Buffer.from(data);
+
+    latestFrames.set(cameraId, {
+      buffer,
+      timestamp: Date.now(),
+    });
+
+    // eslint-disable-next-line no-console
+    console.log('[WS] Frame recibido de cámara', cameraId, 'bytes:', buffer.length);
   });
 
-  ws.on('close', () => {
+  ws.on('error', (err) => {
+    // eslint-disable-next-line no-console
+    console.error('[WS] Error en streaming de cámara', cameraId, err);
+  });
+
+  ws.on('close', (code, reason) => {
+    // eslint-disable-next-line no-console
+    console.log(
+      '[WS] Conexión de streaming cerrada para cámara',
+      cameraId,
+      'code:',
+      code,
+      'reason:',
+      reason.toString()
+    );
     // Opcional: podríamos limpiar latestFrames si queremos que deje de estar disponible.
+    // latestFrames.delete(cameraId);
   });
 });
 

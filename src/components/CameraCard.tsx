@@ -29,12 +29,15 @@ const statusLabels = {
 };
 
 export function CameraCard({ camera, onRequestStream, onRequestPhoto }: CameraCardProps) {
+  const thumbnailSrc =
+    camera.thumbnail || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=400&q=50';
+
   return (
     <div className={`border rounded-lg overflow-hidden ${statusColors[camera.status]}`}>
       {/* Thumbnail */}
       <div className="aspect-video bg-gray-900 relative">
         <ImageWithFallback
-          src="https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=400&q=50"
+          src={thumbnailSrc}
           alt={camera.name}
           className="w-full h-full object-cover opacity-60"
         />

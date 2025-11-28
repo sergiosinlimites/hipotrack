@@ -25,6 +25,7 @@ import threading
 from datetime import datetime, timedelta
 
 import requests
+import websocket
 from websocket import create_connection
 from dotenv import load_dotenv
 
@@ -53,6 +54,7 @@ BASE_HTTP_URL = f"{PROTOCOL_HTTP}://{SERVER_HOST}:{SERVER_PORT}"
 CONTROL_URL = f"{BASE_HTTP_URL}/api/camera/{CAMERA_ID}/take-photo-or-video"
 PHOTO_UPLOAD_URL = f"{BASE_HTTP_URL}/api/cameras/{CAMERA_ID}/photo"
 WS_STREAM_URL = f"{PROTOCOL_WS}://{SERVER_HOST}:{SERVER_PORT}/ws/camera-stream?cameraId={CAMERA_ID}"
+LIVE_FRAME_UPLOAD_URL = f"{BASE_HTTP_URL}/api/cameras/{CAMERA_ID}/live-frame"
 
 # Configuración de la cámara / calidad
 PHOTO_RESOLUTION = os.getenv("PHOTO_RESOLUTION", "640x480")
@@ -67,6 +69,12 @@ PIR_PIN = int(os.getenv("PIR_PIN", "4"))
 
 # Lock para evitar que se lancen capturas simultáneas (PIR + petición remota + streaming)
 CAPTURE_LOCK = threading.Lock()
+
+# Debug opcional de WebSocket (muy verboso). Activar sólo si WS_DEBUG=true en .env
+WS_DEBUG = os.getenv("WS_DEBUG", "false").lower() == "true"
+if WS_DEBUG:
+  websocket.enableTrace(True)
+  log(f"WebSocket debug activado. WS_STREAM_URL={WS_STREAM_URL}")
 
 
 def log(msg: str) -> None:
@@ -132,23 +140,17 @@ def handle_photo_action() -> None:
 
 def stream_for_duration(duration_seconds: int) -> None:
   """
-  Abre una conexión WebSocket al servidor y envía frames JPEG comprimidos
-  durante `duration_seconds`. Para simplificar y ahorrar datos, usa
-  fswebcam para capturar una imagen cada N segundos y la manda como frame.
+  Envía frames JPEG comprimidos al backend durante `duration_seconds`.
 
-  Si quieres mayor frecuencia de frames, puedes reducir FRAME_INTERVAL_SECONDS
-  o implementar captura con OpenCV.
+  Para maximizar la compatibilidad y simplificar, en lugar de WebSocket se
+  usa HTTP POST contra /api/cameras/:id/live-frame (multipart/form-data).
+  Con los intervalos típicos de 1-3 fps el overhead HTTP es aceptable y
+  se evitan problemas de sockets cerrados (Broken pipe).
   """
   FRAME_INTERVAL_SECONDS = int(os.getenv("FRAME_INTERVAL_SECONDS", "2"))
 
   end_time = datetime.now() + timedelta(seconds=duration_seconds)
-  log(f"Iniciando streaming durante {duration_seconds} segundos hacia {WS_STREAM_URL}")
-
-  try:
-    ws = create_connection(WS_STREAM_URL, timeout=10)
-  except Exception as exc:  # noqa: BLE001
-    log(f"No se pudo abrir conexión WebSocket: {exc}")
-    return
+  log(f"Iniciando streaming HTTP durante {duration_seconds} segundos hacia {LIVE_FRAME_UPLOAD_URL}")
 
   try:
     while datetime.now() < end_time:
@@ -166,21 +168,18 @@ def stream_for_duration(duration_seconds: int) -> None:
           if not data:
             log("Frame vacío, se omite el envío")
           else:
-            ws.send_binary(data)
-            log(f"Frame enviado ({len(data)} bytes)")
+            files = {"image": ("frame.jpg", data, "image/jpeg")}
+            resp = requests.post(LIVE_FRAME_UPLOAD_URL, files=files, timeout=10)
+            resp.raise_for_status()
+            log(f"Frame enviado ({len(data)} bytes) al backend")
       except Exception as exc:  # noqa: BLE001
-        log(f"Error enviando frame por WebSocket: {exc}")
+        log(f"Error enviando frame por HTTP: {exc}")
         break
 
       time.sleep(FRAME_INTERVAL_SECONDS)
 
   finally:
-    try:
-      ws.close()
-    except Exception:  # noqa: BLE001
-      pass
-
-  log("Streaming finalizado")
+    log("Streaming finalizado")
 
 
 def _pir_callback(channel: int) -> None:

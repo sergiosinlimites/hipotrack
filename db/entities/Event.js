@@ -12,6 +12,10 @@ module.exports = new EntitySchema({
     type: {
       type: String,
     },
+    filepath: {
+      type: String,
+      nullable: true,
+    },
     payload: {
       type: 'jsonb',
       nullable: true,

@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Camera, Event, EnergyData, AppSettings, DataUsageEvent, DataUsageSummary, DataLimit, DataEventType } from '../types';
 
 export function useMockCameras() {
-  const [cameras, setCameras] = useState<Camera[]>([]);
+  const [cameras, setCameras] = useState([] as Camera[]);
 
   useEffect(() => {
     const fetchCameras = async () => {
@@ -24,12 +24,12 @@ export function useMockCameras() {
 }
 
 export function useMockEvents() {
-  const [events, setEvents] = useState<Event[]>([]);
+  const [events, setEvents] = useState([] as Event[]);
 
   useEffect(() => {
     const fetchEvents = async () => {
       try {
-        const res = await fetch('/api/events');
+        const res = await fetch(`/api/events?ts=${Date.now()}`);
         if (!res.ok) throw new Error('Error fetching events');
         const data = await res.json();
         const mapped: Event[] = data.map((e: any) => ({
@@ -48,14 +48,17 @@ export function useMockEvents() {
     };
 
     fetchEvents();
+    const interval = setInterval(fetchEvents, 10000);
+
+    return () => clearInterval(interval);
   }, []);
 
-  return events;
+  return { events, setEvents };
 }
 
 export function useMockEnergyData() {
-  const [energyHistory, setEnergyHistory] = useState<EnergyData[]>([]);
-  const [currentData, setCurrentData] = useState<EnergyData>({
+  const [energyHistory, setEnergyHistory] = useState([] as EnergyData[]);
+  const [currentData, setCurrentData] = useState({
     voltage: 5.0,
     current: 0.8,
     watts: 4.0,
@@ -98,7 +101,7 @@ export function useMockEnergyData() {
 }
 
 export function useMockSettings() {
-  const [settings, setSettings] = useState<AppSettings>({
+  const [settings, setSettings] = useState({
     operationMode: 'limited',
     streamTimeout: 3,
     snapshotQuality: 60,
@@ -108,8 +111,8 @@ export function useMockSettings() {
 }
 
 export function useMockDataUsage() {
-  const [events, setEvents] = useState<DataUsageEvent[]>([]);
-  const [dataLimit, setDataLimit] = useState<DataLimit>({
+  const [events, setEvents] = useState([] as DataUsageEvent[]);
+  const [dataLimit, setDataLimit] = useState({
     maxBytes: 40 * 1024 * 1024 * 1024, // 40 GB
     resetDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
   });
