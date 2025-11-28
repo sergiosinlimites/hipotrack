@@ -70,16 +70,19 @@ PIR_PIN = int(os.getenv("PIR_PIN", "4"))
 # Lock para evitar que se lancen capturas simultáneas (PIR + petición remota + streaming)
 CAPTURE_LOCK = threading.Lock()
 
+def log(msg: str) -> None:
+  now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+  print(f"[{now}] {msg}", flush=True)
+
+
 # Debug opcional de WebSocket (muy verboso). Activar sólo si WS_DEBUG=true en .env
 WS_DEBUG = os.getenv("WS_DEBUG", "false").lower() == "true"
 if WS_DEBUG:
   websocket.enableTrace(True)
   log(f"WebSocket debug activado. WS_STREAM_URL={WS_STREAM_URL}")
 
-
-def log(msg: str) -> None:
-  now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-  print(f"[{now}] {msg}", flush=True)
+# Debug opcional del PIR para ver cambios de nivel en GPIO4
+PIR_DEBUG = os.getenv("PIR_DEBUG", "false").lower() == "true"
 
 
 def capture_photo_with_fswebcam() -> str:
@@ -132,8 +135,10 @@ def handle_photo_action() -> None:
   Ejecuta el flujo completo de tomar y enviar una foto.
   """
   try:
+    log("Iniciando captura de foto (handle_photo_action)")
     file_path = capture_photo_with_fswebcam()
     upload_photo(file_path)
+    log("Captura y envío de foto completados")
   except Exception as exc:  # noqa: BLE001
     log(f"Error en handle_photo_action: {exc}")
 
@@ -176,20 +181,47 @@ def stream_for_duration(duration_seconds: int) -> None:
         log(f"Error enviando frame por HTTP: {exc}")
         break
 
+      # Log simple de tiempo restante
+      remaining = (end_time - datetime.now()).total_seconds()
+      log(f"Streaming en curso, tiempo restante aproximado: {int(remaining)} segundos")
+
       time.sleep(FRAME_INTERVAL_SECONDS)
 
   finally:
     log("Streaming finalizado")
 
 
-def _pir_callback(channel: int) -> None:
+def _pir_poll_loop(cooldown_seconds: float) -> None:
   """
-  Callback de interrupción del GPIO cuando el sensor PIR detecta presencia.
-  Ejecuta la toma y envío de una foto en un hilo separado para no bloquear el callback.
+  Bucle de sondeo del pin PIR para detectar presencia.
+  Se usa en lugar de interrupciones para replicar el comportamiento del
+  script de prueba (lectura periódica de GPIO.input) y evitar problemas
+  con add_event_detect.
   """
-  log(f"Detección de presencia en GPIO {PIR_PIN} (canal {channel}). Disparando foto...")
-  thread = threading.Thread(target=handle_photo_action, daemon=True)
-  thread.start()
+  if not GPIO_AVAILABLE:
+    log("GPIO no disponible, bucle PIR desactivado.")
+    return
+
+  last_shot = 0.0
+  last_value = GPIO.LOW
+  log(f"Iniciando bucle de sondeo PIR en GPIO {PIR_PIN} con cooldown {cooldown_seconds}s")
+
+  while True:
+    try:
+      value = GPIO.input(PIR_PIN)
+      if PIR_DEBUG and value != last_value:
+        log(f"[PIR_DEBUG] GPIO{PIR_PIN} cambió a {'ALTO' if value == GPIO.HIGH else 'BAJO'}")
+        last_value = value
+      now_ts = time.time()
+      if value == GPIO.HIGH and now_ts - last_shot >= cooldown_seconds:
+        log(f"PIR en ALTO en GPIO {PIR_PIN}. Disparando foto (poll loop).")
+        last_shot = now_ts
+        thread = threading.Thread(target=handle_photo_action, daemon=True)
+        thread.start()
+      time.sleep(0.1)
+    except Exception as exc:  # noqa: BLE001
+      log(f"Error en bucle PIR: {exc}")
+      time.sleep(1.0)
 
 
 def init_pir_sensor() -> None:
@@ -203,8 +235,10 @@ def init_pir_sensor() -> None:
   try:
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(PIR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-    GPIO.add_event_detect(PIR_PIN, GPIO.RISING, callback=_pir_callback, bouncetime=2000)
-    log(f"Sensor PIR inicializado en GPIO {PIR_PIN}")
+    log(f"Sensor PIR inicializado en GPIO {PIR_PIN} (modo polling)")
+    cooldown = float(os.getenv("PIR_COOLDOWN_SECONDS", "5"))
+    pir_thread = threading.Thread(target=_pir_poll_loop, args=(cooldown,), daemon=True)
+    pir_thread.start()
   except Exception as exc:  # noqa: BLE001
     log(f"Error inicializando el sensor PIR: {exc}")
 

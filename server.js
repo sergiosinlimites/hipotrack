@@ -4,10 +4,13 @@ const fs = require('fs');
 const http = require('http');
 const multer = require('multer');
 const WebSocket = require('ws');
+const { spawn } = require('child_process');
 const { AppDataSource } = require('./db/data-source');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const STREAM_FPS = Number(process.env.STREAM_FPS || '1'); // fps usados al generar el MP4
+const FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
 
 // HTTP server (needed to attach WebSocket server)
 const server = http.createServer(app);
@@ -17,7 +20,7 @@ app.use(express.json({ limit: '10mb' }));
 
 // In-memory stores for demo / development (non-persistent).
 const latestFrames = new Map(); // cameraId -> { buffer, timestamp }
-const cameraActions = new Map(); // cameraId -> { photoRequested?: boolean, photoRequestedAt?: number, streamUntil?: number }
+const cameraActions = new Map(); // cameraId -> { photoRequested?: boolean, photoRequestedAt?: number, streamUntil?: number, currentStreamSessionId?: string }
 
 // Healthcheck
 app.get('/api/health', (_req, res) => {
@@ -152,7 +155,7 @@ const uploadsRoot = path.join(__dirname, 'uploads');
 const storage = multer.diskStorage({
   destination: (req, _file, cb) => {
     const { cameraId } = req.params;
-    const cameraDir = path.join(uploadsRoot, cameraId || 'unknown');
+    const cameraDir = path.join(uploadsRoot, cameraId || 'unknown', 'photos');
     fs.mkdirSync(cameraDir, { recursive: true });
     cb(null, cameraDir);
   },
@@ -178,6 +181,108 @@ const memoryUpload = multer({
   },
 });
 
+// ----------------------------
+// Helpers para generación de video a partir de frames
+// ----------------------------
+
+const generateVideoForSession = async (sessionId) => {
+  try {
+    const sessionRepo = AppDataSource.getRepository('StreamSession');
+    const session = await sessionRepo.findOne({
+      where: { id: sessionId },
+      relations: ['camera'],
+    });
+    if (!session) {
+      return;
+    }
+
+    const cameraId = session.camera ? session.camera.id : 'unknown';
+    const videoDir = path.join(uploadsRoot, cameraId || 'unknown', 'videos', sessionId);
+
+    if (!fs.existsSync(videoDir)) {
+      session.status = 'failed';
+      session.ended_at = new Date();
+      await sessionRepo.save(session);
+      return;
+    }
+
+    const files = fs
+      .readdirSync(videoDir)
+      .filter((f) => f.toLowerCase().endsWith('.jpg') || f.toLowerCase().endsWith('.jpeg'));
+
+    if (!files.length) {
+      session.status = 'failed';
+      session.ended_at = new Date();
+      await sessionRepo.save(session);
+      return;
+    }
+
+    const outputFile = 'stream.mp4';
+    const outputPath = path.join(videoDir, outputFile);
+
+    const ffmpegArgs = [
+      '-y',
+      '-framerate',
+      String(STREAM_FPS),
+      '-pattern_type',
+      'glob',
+      '-i',
+      '*.jpg',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      outputFile,
+    ];
+
+    // eslint-disable-next-line no-console
+    console.log(
+      'Iniciando generación de video con ffmpeg para sesión',
+      sessionId,
+      'en',
+      videoDir
+    );
+
+    const child = spawn(FFMPEG_PATH, ffmpegArgs, { cwd: videoDir });
+
+    child.on('close', async (code) => {
+      if (code === 0) {
+        session.video_path = `/uploads/${cameraId}/videos/${sessionId}/${outputFile}`;
+        session.status = 'completed';
+        session.ended_at = new Date();
+        await sessionRepo.save(session);
+        // eslint-disable-next-line no-console
+        console.log('Video generado correctamente para sesión', sessionId);
+      } else {
+        session.status = 'failed';
+        session.ended_at = new Date();
+        await sessionRepo.save(session);
+        // eslint-disable-next-line no-console
+        console.error('ffmpeg terminó con código', code, 'para sesión', sessionId);
+      }
+    });
+
+    child.on('error', async (err) => {
+      // eslint-disable-next-line no-console
+      console.error('Error ejecutando ffmpeg para sesión', sessionId, err);
+      session.status = 'failed';
+      session.ended_at = new Date();
+      await sessionRepo.save(session);
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error en generateVideoForSession', err);
+  }
+};
+
+const scheduleVideoGeneration = (sessionId, durationSeconds) => {
+  const bufferSeconds = 5; // margen para últimos frames
+  const delayMs = (durationSeconds + bufferSeconds) * 1000;
+  setTimeout(() => {
+    generateVideoForSession(sessionId);
+  }, delayMs);
+};
+
 // Endpoint para que la Raspberry envíe una foto puntual (snapshot)
 // POST /api/cameras/:cameraId/photo  (multipart/form-data, campo "image")
 app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res) => {
@@ -197,7 +302,7 @@ app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res
       return res.status(404).json({ error: 'Camera not found' });
     }
 
-    const relativeUrl = `/uploads/${cameraId}/${req.file.filename}`;
+    const relativeUrl = `/uploads/${cameraId}/photos/${req.file.filename}`;
 
     // Guardar la foto en la base de datos
     const photo = photoRepo.create({
@@ -305,19 +410,78 @@ app.get('/api/cameras/:cameraId/live-frame', (req, res) => {
 
 // Endpoint para recibir frames de streaming vía HTTP (alternativa al WebSocket).
 // POST /api/cameras/:cameraId/live-frame  (multipart/form-data, campo "image")
-app.post('/api/cameras/:cameraId/live-frame', memoryUpload.single('image'), (req, res) => {
-  const { cameraId } = req.params;
+app.post('/api/cameras/:cameraId/live-frame', memoryUpload.single('image'), async (req, res) => {
+  try {
+    const { cameraId } = req.params;
 
-  if (!req.file || !req.file.buffer) {
-    return res.status(400).json({ error: 'Missing image file in "image" field' });
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'Missing image file in "image" field' });
+    }
+
+    // Actualizar último frame en memoria
+    latestFrames.set(cameraId, {
+      buffer: req.file.buffer,
+      timestamp: Date.now(),
+    });
+
+    // Guardar frame en disco dentro de una carpeta de vídeo por sesión
+    const actions = cameraActions.get(cameraId) || {};
+    const sessionId = actions.currentStreamSessionId || `${Date.now()}`;
+    const videoDir = path.join(uploadsRoot, cameraId || 'unknown', 'videos', sessionId);
+    fs.mkdirSync(videoDir, { recursive: true });
+    const filename = `${Date.now()}.jpg`;
+    const fullPath = path.join(videoDir, filename);
+
+    try {
+      fs.writeFileSync(fullPath, req.file.buffer);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Error writing video frame to disk', err);
+    }
+
+    // Actualizar métricas de la sesión en la base de datos
+    if (actions.currentStreamSessionId) {
+      try {
+        const sessionRepo = AppDataSource.getRepository('StreamSession');
+        const session = await sessionRepo.findOne({
+          where: { id: actions.currentStreamSessionId },
+        });
+        if (session) {
+          session.frame_count += 1;
+          session.bytes_sent = Number(session.bytes_sent || 0) + req.file.buffer.length;
+          await sessionRepo.save(session);
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('Error updating stream session metrics', err);
+      }
+    }
+
+    return res.json({ ok: true, sessionId });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error handling live-frame upload', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
+});
 
-  latestFrames.set(cameraId, {
-    buffer: req.file.buffer,
-    timestamp: Date.now(),
-  });
+// Permite regenerar el video de una sesión existente sin necesidad de un nuevo streaming.
+app.post('/api/streams/:sessionId/generate-video', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const sessionRepo = AppDataSource.getRepository('StreamSession');
+    const session = await sessionRepo.findOne({ where: { id: sessionId } });
+    if (!session) {
+      return res.status(404).json({ error: 'StreamSession not found' });
+    }
 
-  return res.json({ ok: true });
+    generateVideoForSession(sessionId);
+    return res.status(202).json({ ok: true, message: 'Video generation started', sessionId });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error starting manual video generation', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // ----------------------------
@@ -339,24 +503,56 @@ app.post('/api/cameras/:cameraId/request-photo', (req, res) => {
 
 // Endpoint para que el frontend/server solicite que una cámara haga streaming durante un tiempo.
 // POST /api/cameras/:cameraId/request-stream  { durationSeconds?: number }
-app.post('/api/cameras/:cameraId/request-stream', (req, res) => {
-  const { cameraId } = req.params;
-  const { durationSeconds = 300 } = req.body || {};
+app.post('/api/cameras/:cameraId/request-stream', async (req, res) => {
+  try {
+    const { cameraId } = req.params;
+    const { durationSeconds = 300 } = req.body || {};
 
-  const now = Date.now();
-  const until = now + durationSeconds * 1000;
-  const actions = cameraActions.get(cameraId) || {};
+    const cameraRepo = AppDataSource.getRepository('Camera');
+    const sessionRepo = AppDataSource.getRepository('StreamSession');
 
-  actions.streamUntil = until;
-  cameraActions.set(cameraId, actions);
+    const camera = await cameraRepo.findOne({ where: { id: cameraId } });
+    if (!camera) {
+      return res.status(404).json({ error: 'Camera not found' });
+    }
 
-  res.json({
-    ok: true,
-    cameraId,
-    action: 'stream',
-    streamUntil: new Date(until).toISOString(),
-    durationSeconds,
-  });
+    const now = Date.now();
+    const until = now + durationSeconds * 1000;
+
+    // Creamos una sesión de streaming en la base de datos
+    const session = sessionRepo.create({
+      camera,
+      started_at: new Date(now),
+      ended_at: null,
+      initiated_by: 'user',
+      video_path: null,
+      frame_count: 0,
+      bytes_sent: 0,
+      status: 'active',
+    });
+    const savedSession = await sessionRepo.save(session);
+
+    const actions = cameraActions.get(cameraId) || {};
+    actions.streamUntil = until;
+    actions.currentStreamSessionId = savedSession.id;
+    cameraActions.set(cameraId, actions);
+
+    // Programamos generación del MP4 para cuando termine el streaming (no bloquea el backend)
+    scheduleVideoGeneration(savedSession.id, durationSeconds);
+
+    res.json({
+      ok: true,
+      cameraId,
+      action: 'stream',
+      streamUntil: new Date(until).toISOString(),
+      durationSeconds,
+      sessionId: savedSession.id,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error requesting stream', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Endpoint que la Raspberry consulta periódicamente para saber si debe tomar foto o hacer streaming.

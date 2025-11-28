@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Camera } from '../types';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
@@ -8,13 +8,81 @@ interface PhotoCaptureModalProps {
   camera: Camera | null;
   isOpen: boolean;
   onClose: () => void;
-  imageUrl: string | null;
 }
 
-export function PhotoCaptureModal({ camera, isOpen, onClose, imageUrl }: PhotoCaptureModalProps) {
+type Status = 'waiting' | 'received' | 'error';
+
+export function PhotoCaptureModal({ camera, isOpen, onClose }: PhotoCaptureModalProps) {
+  const [status, setStatus] = useState<Status>('waiting');
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !camera) return;
+
+    let cancelled = false;
+
+    setStatus('waiting');
+    setImageUrl(null);
+    setErrorMessage(null);
+
+    const waitForPhoto = async () => {
+      try {
+        const requestStart = Date.now();
+        const timeoutMs = 70_000; // 70 segundos máximo
+
+        while (!cancelled && Date.now() - requestStart < timeoutMs) {
+          // pequeña espera entre peticiones
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          if (cancelled) return;
+
+          // eslint-disable-next-line no-await-in-loop
+          const res = await fetch(
+            `/api/cameras/${camera.id}/latest-photo?ts=${Date.now()}`
+          );
+          if (!res.ok) {
+            continue;
+          }
+
+          // eslint-disable-next-line no-await-in-loop
+          const data = await res.json();
+          const ts = new Date(data.capturedAt).getTime();
+
+          if (ts >= requestStart) {
+            const url: string = data.imageUrl || data.thumbnail;
+            setStatus('received');
+            setImageUrl(url);
+            return;
+          }
+        }
+
+        if (!cancelled) {
+          setStatus('error');
+          setErrorMessage(
+            'No se recibió la foto en el tiempo esperado. Verifica la conexión de la cámara.'
+          );
+        }
+      } catch (err) {
+        if (!cancelled) {
+          // eslint-disable-next-line no-console
+          console.error('Error esperando la foto', err);
+          setStatus('error');
+          setErrorMessage('Ocurrió un error al esperar la foto. Revisa la consola del navegador.');
+        }
+      }
+    };
+
+    waitForPhoto();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, camera]);
+
   if (!camera) return null;
 
-  const isWaiting = !imageUrl;
+  const isWaiting = status === 'waiting';
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -38,7 +106,7 @@ export function PhotoCaptureModal({ camera, isOpen, onClose, imageUrl }: PhotoCa
             </div>
           )}
 
-          {!isWaiting && imageUrl && (
+          {status === 'received' && imageUrl && (
             <div className="space-y-3">
               <div className="bg-gray-900 rounded-lg overflow-hidden">
                 <ImageWithFallback
@@ -51,6 +119,10 @@ export function PhotoCaptureModal({ camera, isOpen, onClose, imageUrl }: PhotoCa
                 La foto más reciente se ha recibido correctamente desde la Raspberry.
               </p>
             </div>
+          )}
+
+          {status === 'error' && errorMessage && (
+            <p className="text-sm text-red-600">{errorMessage}</p>
           )}
 
           <div className="flex justify-end pt-2">

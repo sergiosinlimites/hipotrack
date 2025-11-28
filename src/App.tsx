@@ -26,7 +26,6 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(true);
   const [streamingCamera, setStreamingCamera] = useState(null as Camera | null);
   const [photoCamera, setPhotoCamera] = useState(null as Camera | null);
-  const [photoImageUrl, setPhotoImageUrl] = useState(null as string | null);
 
   const { cameras, setCameras } = useMockCameras();
   const { events, setEvents } = useMockEvents();
@@ -119,7 +118,6 @@ export default function App() {
       if (!res.ok) throw new Error('Error al solicitar foto');
 
       setPhotoCamera(camera);
-      setPhotoImageUrl(null);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('handleRequestPhoto error', err);
@@ -168,11 +166,6 @@ export default function App() {
               c.id === data.cameraId ? { ...c, thumbnail: data.thumbnail || data.imageUrl } : c
             )
           );
-
-          // Si el modal de foto está abierto para esa cámara, mostrar la imagen
-          if (photoCamera && photoCamera.id === data.cameraId) {
-            setPhotoImageUrl(data.imageUrl);
-          }
         }
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -183,7 +176,7 @@ export default function App() {
     return () => {
       ws.close();
     };
-  }, [setCameras, setEvents, photoCamera]);
+  }, [setCameras, setEvents]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
@@ -238,7 +231,6 @@ export default function App() {
         camera={photoCamera}
         isOpen={!!photoCamera}
         onClose={() => setPhotoCamera(null)}
-        imageUrl={photoImageUrl}
       />
     </div>
   );

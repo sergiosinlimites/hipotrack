@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, AlertCircle } from 'lucide-react';
 import { Camera } from '../types';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
@@ -14,42 +14,27 @@ interface StreamingModalProps {
 
 export function StreamingModal({ camera, isOpen, onClose, timeout }: StreamingModalProps) {
   const [timeLeft, setTimeLeft] = useState(timeout * 60);
-  const lastActivityRef = useRef(Date.now());
   const [frameTick, setFrameTick] = useState(0);
 
   useEffect(() => {
     if (!isOpen) return;
 
     setTimeLeft(timeout * 60);
-    lastActivityRef.current = Date.now();
-
-    const handleActivity = () => {
-      lastActivityRef.current = Date.now();
-      setTimeLeft(timeout * 60);
-    };
-
-    window.addEventListener('mousemove', handleActivity);
-    window.addEventListener('keydown', handleActivity);
-    window.addEventListener('click', handleActivity);
-
     const interval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - lastActivityRef.current) / 1000);
-      const remaining = Math.max(0, timeout * 60 - elapsed);
-      
-      setTimeLeft(remaining);
-      
-      if (remaining === 0) {
-        onClose();
-      }
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          onClose();
+          return 0;
+        }
+        return prev - 1;
+      });
     }, 1000);
 
     return () => {
       clearInterval(interval);
-      window.removeEventListener('mousemove', handleActivity);
-      window.removeEventListener('keydown', handleActivity);
-      window.removeEventListener('click', handleActivity);
     };
-  }, [isOpen, timeout, onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, timeout]);
 
   // Actualizar el frame de video periódicamente mientras el modal esté abierto
   useEffect(() => {
@@ -88,7 +73,12 @@ export function StreamingModal({ camera, isOpen, onClose, timeout }: StreamingMo
         <div className="space-y-4">
           {/* Stream viewer */}
           <div className="bg-gray-900 rounded-lg overflow-hidden aspect-video relative">
-            <ImageWithFallback src={streamSrc} alt="Live stream" className="w-full h-full object-cover" />
+            <ImageWithFallback
+              key={frameTick}
+              src={streamSrc}
+              alt="Live stream"
+              className="w-full h-full object-cover"
+            />
             <div className="absolute top-4 left-4 bg-red-600 px-3 py-1 rounded-full flex items-center gap-2">
               <div className="size-2 rounded-full bg-white animate-pulse" />
               <span className="text-white text-sm">EN VIVO</span>
@@ -99,8 +89,8 @@ export function StreamingModal({ camera, isOpen, onClose, timeout }: StreamingMo
           <div className="space-y-2 text-sm text-gray-600">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
-                <span>Resolución estimada: 640x480</span>
-                <span>FPS objetivo: 1-3</span>
+                <span>Resolución estimada: 320x240</span>
+                <span>FPS objetivo: ~{Math.round(1 / 2)}</span>
               </div>
 
               <div className="flex items-center gap-2 text-amber-600">
