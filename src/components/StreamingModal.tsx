@@ -89,8 +89,8 @@ export function StreamingModal({ camera, isOpen, onClose, timeout }: StreamingMo
           <div className="space-y-2 text-sm text-gray-600">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
-                <span>Resolución estimada: 320x240</span>
-                <span>FPS objetivo: ~{Math.round(1 / 2)}</span>
+                <span>Resolución estimada: 1280x720</span>
+                <span>FPS objetivo: ~30</span>
               </div>
 
               <div className="flex items-center gap-2 text-amber-600">
