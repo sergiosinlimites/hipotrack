@@ -32,14 +32,19 @@ export function useMockEvents() {
         const res = await fetch(`/api/events?ts=${Date.now()}`);
         if (!res.ok) throw new Error('Error fetching events');
         const data = await res.json();
-        const mapped: Event[] = data.map((e: any) => ({
-          id: e.id,
-          cameraId: e.cameraId,
-          cameraName: e.cameraName,
-          timestamp: new Date(e.timestamp),
-          thumbnail: e.thumbnail,
-          imageUrl: e.imageUrl,
-        }));
+        const mapped: Event[] = data.map((e: any) => {
+          const mediaType = e.mediaType === 'video' ? 'video' : 'photo';
+          return {
+            id: e.id,
+            cameraId: e.cameraId,
+            cameraName: e.cameraName,
+            timestamp: new Date(e.timestamp),
+            thumbnail: e.thumbnail,
+            imageUrl: e.imageUrl,
+            videoUrl: e.videoUrl,
+            mediaType,
+          };
+        });
         setEvents(mapped);
       } catch (err) {
         // eslint-disable-next-line no-console

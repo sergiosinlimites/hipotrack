@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Event } from '../types';
-import { Calendar, Camera as CameraIcon, X } from 'lucide-react';
+import { Calendar, Camera as CameraIcon, X, PlayCircle } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Dialog, DialogContent } from './ui/dialog';
 import { Button } from './ui/button';
@@ -13,14 +13,37 @@ interface EventsGalleryProps {
 export function EventsGallery({ events }: EventsGalleryProps) {
   const [selectedCamera, setSelectedCamera] = useState<string>('all');
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [mediaFilter, setMediaFilter] = useState<'all' | 'photo' | 'video'>('all');
 
-  const uniqueCameras = Array.from(
-    new Map(events.map((e) => [e.cameraId, e.cameraName])).entries()
-  ).map(([id, name]) => ({ id, name }));
+  const uniqueCameras = useMemo(
+    () =>
+      Array.from(new Map(events.map((e) => [e.cameraId, e.cameraName])).entries()).map(
+        ([id, name]) => ({ id, name })
+      ),
+    [events]
+  );
 
-  const filteredEvents = selectedCamera === 'all' 
-    ? events 
-    : events.filter(e => e.cameraId === selectedCamera);
+  const filteredEvents = useMemo(() => {
+    // Primero, descartar cualquier evento que no tenga media válida.
+    const withMedia = events.filter((e) => {
+      const mediaType = e.mediaType || (e.videoUrl ? 'video' : 'photo');
+      const hasPhoto = mediaType === 'photo' && !!e.imageUrl;
+      const hasVideo = mediaType === 'video' && !!e.videoUrl;
+      return hasPhoto || hasVideo;
+    });
+
+    const byCamera =
+      selectedCamera === 'all'
+        ? withMedia
+        : withMedia.filter((e) => e.cameraId === selectedCamera);
+
+    if (mediaFilter === 'all') return byCamera;
+
+    return byCamera.filter((e) => {
+      const mediaType = e.mediaType || (e.videoUrl ? 'video' : 'photo');
+      return mediaType === mediaFilter;
+    });
+  }, [events, selectedCamera, mediaFilter]);
 
   return (
     <div>
@@ -30,20 +53,49 @@ export function EventsGallery({ events }: EventsGalleryProps) {
       </div>
 
       {/* Filters */}
-      <div className="mb-6 flex gap-3">
-        <Select value={selectedCamera} onValueChange={setSelectedCamera}>
-          <SelectTrigger className="w-64">
-            <SelectValue placeholder="Filtrar por cámara" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todas las cámaras</SelectItem>
-            {uniqueCameras.map((camera) => (
-              <SelectItem key={camera.id} value={camera.id}>
-                {camera.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <Select value={selectedCamera} onValueChange={setSelectedCamera}>
+            <SelectTrigger className="w-52 sm:w-64">
+              <SelectValue placeholder="Filtrar por cámara" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todas las cámaras</SelectItem>
+              {uniqueCameras.map((camera) => (
+                <SelectItem key={camera.id} value={camera.id}>
+                  {camera.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500">Tipo de evento:</span>
+          <div className="flex gap-1">
+            <Button
+              size="xs"
+              variant={mediaFilter === 'all' ? 'default' : 'outline'}
+              onClick={() => setMediaFilter('all')}
+            >
+              Todos
+            </Button>
+            <Button
+              size="xs"
+              variant={mediaFilter === 'photo' ? 'default' : 'outline'}
+              onClick={() => setMediaFilter('photo')}
+            >
+              Fotos
+            </Button>
+            <Button
+              size="xs"
+              variant={mediaFilter === 'video' ? 'default' : 'outline'}
+              onClick={() => setMediaFilter('video')}
+            >
+              Videos
+            </Button>
+          </div>
+        </div>
       </div>
 
       {/* Gallery grid */}
@@ -60,8 +112,26 @@ export function EventsGallery({ events }: EventsGalleryProps) {
                 alt={event.cameraName}
                 className="w-full h-full object-cover group-hover:opacity-75 transition-opacity"
               />
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2">
-                <p className="text-white text-xs truncate">{event.cameraName}</p>
+              <div className="absolute inset-0 flex flex-col justify-between">
+                <div className="flex items-start justify-between p-2">
+                  <div className="inline-flex items-center gap-1 rounded-full bg-black/60 px-2 py-0.5">
+                    <CameraIcon className="size-3 text-white/80" />
+                    <span className="text-[10px] text-white/90 truncate max-w-[120px]">
+                      {event.cameraName}
+                    </span>
+                  </div>
+                  {event.mediaType === 'video' && (
+                    <div className="inline-flex items-center gap-1 rounded-full bg-black/70 px-2 py-0.5">
+                      <PlayCircle className="size-3 text-white" />
+                      <span className="text-[10px] text-white">Video</span>
+                    </div>
+                  )}
+                </div>
+                <div className="bg-gradient-to-t from-black/70 to-transparent p-2">
+                  <p className="text-white text-[11px] truncate">
+                    {event.timestamp.toLocaleString('es')}
+                  </p>
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-1 text-xs text-gray-600">
@@ -80,7 +150,7 @@ export function EventsGallery({ events }: EventsGalleryProps) {
 
       {/* Image viewer dialog */}
       <Dialog open={!!selectedEvent} onOpenChange={(open) => !open && setSelectedEvent(null)}>
-        <DialogContent className="max-w-4xl">
+        <DialogContent className="max-w-5xl w-[95vw] max-h-[90vh]">
           {selectedEvent && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
@@ -95,12 +165,21 @@ export function EventsGallery({ events }: EventsGalleryProps) {
                 </Button>
               </div>
               
-              <div className="bg-gray-900 rounded-lg overflow-hidden">
-                <ImageWithFallback
-                  src={selectedEvent.imageUrl || selectedEvent.thumbnail}
-                  alt="Event"
-                  className="w-full h-auto"
-                />
+              <div className="bg-gray-900 rounded-lg overflow-hidden max-h-[70vh] flex items-center justify-center">
+                {selectedEvent.mediaType === 'video' && selectedEvent.videoUrl ? (
+                  <video
+                    className="w-full h-full max-h-[70vh] bg-black"
+                    src={selectedEvent.videoUrl}
+                    controls
+                    autoPlay
+                  />
+                ) : (
+                  <ImageWithFallback
+                    src={selectedEvent.imageUrl || selectedEvent.thumbnail}
+                    alt="Event"
+                    className="w-full h-auto"
+                  />
+                )}
               </div>
             </div>
           )}

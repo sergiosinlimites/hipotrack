@@ -125,7 +125,7 @@ export default function App() {
     }
   };
 
-  // WebSocket de eventos (fotos) para actualizaciones en tiempo (casi) real
+  // WebSocket de eventos (fotos / vídeos) para actualizaciones en tiempo (casi) real
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const wsUrl =
@@ -145,9 +145,11 @@ export default function App() {
           timestamp: string;
           imageUrl: string;
           thumbnail?: string;
+          videoUrl?: string;
+          mediaType?: 'photo' | 'video';
         };
 
-        if (data.type === 'photo') {
+        if (data.type === 'photo' || data.mediaType === 'photo') {
           const evt: Event = {
             id: data.id,
             cameraId: data.cameraId,
@@ -155,6 +157,8 @@ export default function App() {
             timestamp: new Date(data.timestamp),
             thumbnail: data.thumbnail || data.imageUrl,
             imageUrl: data.imageUrl,
+            videoUrl: undefined,
+            mediaType: 'photo',
           };
 
           // Actualizar lista de eventos

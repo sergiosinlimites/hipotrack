@@ -17,13 +17,30 @@ export interface Camera {
   };
 }
 
+export type EventMediaType = 'photo' | 'video';
+
 export interface Event {
   id: string;
   cameraId: string;
   cameraName: string;
   timestamp: Date;
+  /**
+   * URL de la miniatura mostrada en la galería.
+   * Para fotos suele ser la propia imagen; para vídeos, un frame JPG.
+   */
   thumbnail: string;
-  imageUrl: string;
+  /**
+   * URL de la imagen de alta resolución (solo para eventos de foto).
+   */
+  imageUrl?: string;
+  /**
+   * URL del vídeo MP4 generado a partir del streaming (solo para eventos de vídeo).
+   */
+  videoUrl?: string;
+  /**
+   * Tipo de medio del evento. Si falta, el frontend intentará inferirlo.
+   */
+  mediaType: EventMediaType;
 }
 
 export interface EnergyData {

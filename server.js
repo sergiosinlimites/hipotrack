@@ -6,6 +6,7 @@ const multer = require('multer');
 const WebSocket = require('ws');
 const { spawn } = require('child_process');
 const { AppDataSource } = require('./db/data-source');
+const { Not, IsNull } = require('typeorm');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -729,26 +730,93 @@ app.get('/api/cameras/:cameraId/events', async (req, res) => {
 });
 
 // Global events feed (for the Events view)
+// Combina:
+//  - Eventos de tipo "photo" almacenados en la tabla events
+//  - Sesiones de streaming completadas con video_path en stream_sessions
+// Además, filtra cualquier evento que no tenga media válida (thumbnail + image/video).
 app.get('/api/events', async (_req, res) => {
   try {
     const eventRepo = AppDataSource.getRepository('Event');
-    const events = await eventRepo.find({
+    const sessionRepo = AppDataSource.getRepository('StreamSession');
+
+    const photoEvents = await eventRepo.find({
       where: { type: 'photo' },
       relations: ['camera'],
       order: { created_at: 'DESC' },
       take: 200,
     });
 
-    const mapped = events.map((e) => ({
+    const videoSessions = await sessionRepo.find({
+      where: { video_path: Not(IsNull()) },
+      relations: ['camera'],
+      order: { created_at: 'DESC' },
+      take: 200,
+    });
+
+    const photoMapped = photoEvents.map((e) => ({
       id: e.id,
       cameraId: e.camera ? e.camera.id : '',
       cameraName: e.camera ? e.camera.name : 'Sin cámara',
       timestamp: e.created_at,
       thumbnail: e.filepath || (e.payload && e.payload.image_path) || '',
       imageUrl: e.filepath || (e.payload && e.payload.image_path) || '',
+      videoUrl: null,
+      mediaType: 'photo',
     }));
 
-    res.json(mapped);
+    const videoMapped = videoSessions.map((s) => {
+      const cameraId = s.camera ? s.camera.id : '';
+      const cameraName = s.camera ? s.camera.name : 'Sin cámara';
+      const timestamp = s.created_at || s.started_at || new Date();
+
+      let thumbnail = '';
+      try {
+        const videoDir = path.join(uploadsRoot, cameraId || 'unknown', 'videos', s.id);
+        if (fs.existsSync(videoDir)) {
+          const files = fs
+            .readdirSync(videoDir)
+            .filter(
+              (f) =>
+                f.toLowerCase().endsWith('.jpg') || f.toLowerCase().endsWith('.jpeg')
+            )
+            .sort();
+          if (files.length > 0) {
+            const midIndex = Math.floor(files.length / 2);
+            const thumbFile = files[midIndex] || files[0];
+            thumbnail = `/uploads/${cameraId}/videos/${s.id}/${thumbFile}`;
+          }
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('Error leyendo thumbnails de vídeo para sesión', s.id, err);
+      }
+
+      return {
+        id: s.id,
+        cameraId,
+        cameraName,
+        timestamp,
+        thumbnail,
+        imageUrl: thumbnail,
+        videoUrl: s.video_path || '',
+        mediaType: 'video',
+      };
+    });
+
+    // Unir ambos tipos de eventos y filtrar los que no tengan media válida
+    const all = [...photoMapped, ...videoMapped].filter((e) => {
+      if (e.mediaType === 'video') {
+        return !!e.videoUrl;
+      }
+      return !!e.imageUrl;
+    });
+
+    // Ordenar por fecha descendente y limitar a los más recientes
+    const sorted = all.sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+
+    res.json(sorted.slice(0, 200));
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('Error listing events', err);
