@@ -10,16 +10,16 @@ module.exports = new EntitySchema({
       generated: 'uuid',
     },
     voltage: {
-      type: Number,
+      type: 'float',
     },
     current: {
-      type: Number,
+      type: 'float',
     },
     watts: {
-      type: Number,
+      type: 'float',
     },
     cpu_temp: {
-      type: Number,
+      type: 'float',
     },
     measured_at: {
       type: 'timestamptz',
