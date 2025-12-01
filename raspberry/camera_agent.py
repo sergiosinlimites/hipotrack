@@ -53,6 +53,8 @@ PROTOCOL_WS = "wss" if USE_HTTPS else "ws"
 BASE_HTTP_URL = f"{PROTOCOL_HTTP}://{SERVER_HOST}:{SERVER_PORT}"
 CONTROL_URL = f"{BASE_HTTP_URL}/api/camera/{CAMERA_ID}/take-photo-or-video"
 PHOTO_UPLOAD_URL = f"{BASE_HTTP_URL}/api/cameras/{CAMERA_ID}/photo"
+ENERGY_URL = f"{BASE_HTTP_URL}/api/cameras/{CAMERA_ID}/energy"
+DATA_USAGE_URL = f"{BASE_HTTP_URL}/api/cameras/{CAMERA_ID}/data-usage"
 WS_STREAM_URL = f"{PROTOCOL_WS}://{SERVER_HOST}:{SERVER_PORT}/ws/camera-stream?cameraId={CAMERA_ID}"
 LIVE_FRAME_UPLOAD_URL = f"{BASE_HTTP_URL}/api/cameras/{CAMERA_ID}/live-frame"
 
@@ -63,6 +65,22 @@ PHOTO_FILE_PATH = "/tmp/camera_snapshot.jpg"
 
 # Cada cuánto tiempo la Raspberry consulta si hay orden de foto/video (segundos)
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
+
+# Cada cuántos polls se envía una muestra de energía (1 = en cada poll).
+# Leer temperatura de CPU y hacer un POST pequeño es barato, pero lo hacemos configurable.
+ENERGY_SAMPLE_EVERY_POLLS = int(os.getenv("ENERGY_SAMPLE_EVERY_POLLS", "5"))
+
+# Telemetría de uso de datos (basada en bytes enviados/recibidos por HTTP)
+DATA_USAGE_ENABLED = os.getenv("DATA_USAGE_ENABLED", "true").lower() == "true"
+DATA_USAGE_FLUSH_EVERY_POLLS = int(os.getenv("DATA_USAGE_FLUSH_EVERY_POLLS", "5"))
+
+# Buffer local de consumo de datos por tipo
+DATA_USAGE_BUFFER = {
+  "detection": 0,
+  "photo": 0,
+  "stream": 0,
+  "system": 0,
+}
 
 # Pin GPIO usado para el sensor PIR (modo BCM)
 PIR_PIN = int(os.getenv("PIR_PIN", "4"))
@@ -119,12 +137,20 @@ def upload_photo(file_path: str) -> None:
   Envía la foto al backend usando multipart/form-data.
   """
   log(f"Subiendo foto a {PHOTO_UPLOAD_URL}")
+  file_size = 0
+  try:
+    file_size = os.path.getsize(file_path)
+  except OSError:
+    file_size = 0
+
   with open(file_path, "rb") as f:
     files = {"image": ("snapshot.jpg", f, "image/jpeg")}
     try:
       resp = requests.post(PHOTO_UPLOAD_URL, files=files, timeout=15)
       resp.raise_for_status()
       data = resp.json()
+      resp_bytes = len(resp.content or b"") if hasattr(resp, "content") else 0
+      _add_data_usage("photo", file_size + resp_bytes)
       log(f"Foto subida correctamente. Respuesta: {data}")
     except Exception as exc:  # noqa: BLE001
       log(f"Error al subir la foto: {exc}")
@@ -176,6 +202,8 @@ def stream_for_duration(duration_seconds: int) -> None:
             files = {"image": ("frame.jpg", data, "image/jpeg")}
             resp = requests.post(LIVE_FRAME_UPLOAD_URL, files=files, timeout=10)
             resp.raise_for_status()
+            resp_bytes = len(resp.content or b"") if hasattr(resp, "content") else 0
+            _add_data_usage("stream", len(data) + resp_bytes)
             log(f"Frame enviado ({len(data)} bytes) al backend")
       except Exception as exc:  # noqa: BLE001
         log(f"Error enviando frame por HTTP: {exc}")
@@ -189,6 +217,104 @@ def stream_for_duration(duration_seconds: int) -> None:
 
   finally:
     log("Streaming finalizado")
+
+
+def _read_cpu_temperature() -> float | None:
+  """
+  Lee la temperatura de la CPU desde /sys/class/thermal/thermal_zone0/temp (si existe).
+  Devuelve la temperatura en °C o None si no se puede leer.
+  """
+  path = "/sys/class/thermal/thermal_zone0/temp"
+  try:
+    with open(path, "r", encoding="utf-8") as f:
+      raw = f.read().strip()
+    millis = int(raw)
+    return millis / 1000.0
+  except Exception as exc:  # noqa: BLE001
+    log(f"No se pudo leer la temperatura de la CPU desde {path}: {exc}")
+    return None
+
+
+def _send_energy_sample_if_needed(poll_count: int) -> None:
+  """
+  Envía una muestra de energía cada ENERGY_SAMPLE_EVERY_POLLS consultas de control.
+  Usa datos aproximados (voltaje/corriente constantes) + temperatura real de CPU.
+  """
+  if ENERGY_SAMPLE_EVERY_POLLS <= 0:
+    return
+  if poll_count % ENERGY_SAMPLE_EVERY_POLLS != 0:
+    return
+
+  cpu_temp = _read_cpu_temperature()
+  if cpu_temp is None:
+    return
+
+  try:
+    voltage = float(os.getenv("ENERGY_VOLTAGE_DEFAULT", "5.0"))
+  except ValueError:
+    voltage = 5.0
+  try:
+    current = float(os.getenv("ENERGY_CURRENT_DEFAULT", "0.8"))
+  except ValueError:
+    current = 0.8
+
+  watts = voltage * current
+
+  payload = {
+    "voltage": voltage,
+    "current": current,
+    "watts": watts,
+    "cpuTemp": cpu_temp,
+  }
+
+  try:
+    log(f"Enviando muestra de energía a {ENERGY_URL}: {payload}")
+    resp = requests.post(ENERGY_URL, json=payload, timeout=10)
+    resp.raise_for_status()
+    resp_bytes = len(resp.content or b"") if hasattr(resp, "content") else 0
+    _add_data_usage("system", len(str(payload).encode("utf-8")) + resp_bytes)
+  except Exception as exc:  # noqa: BLE001
+    log(f"Error al enviar muestra de energía: {exc}")
+
+
+def _add_data_usage(event_type: str, bytes_count: int) -> None:
+  """
+  Acumula bytes en el buffer local de consumo de datos.
+  """
+  if not DATA_USAGE_ENABLED:
+    return
+  if bytes_count <= 0:
+    return
+  if event_type not in DATA_USAGE_BUFFER:
+    event_type = "system"
+  DATA_USAGE_BUFFER[event_type] += bytes_count
+
+
+def _flush_data_usage_if_needed(poll_count: int) -> None:
+  """
+  Envía eventos de consumo de datos agregados cada DATA_USAGE_FLUSH_EVERY_POLLS polls.
+  """
+  if not DATA_USAGE_ENABLED:
+    return
+  if DATA_USAGE_FLUSH_EVERY_POLLS <= 0:
+    return
+  if poll_count % DATA_USAGE_FLUSH_EVERY_POLLS != 0:
+    return
+
+  for event_type, total_bytes in list(DATA_USAGE_BUFFER.items()):
+    if total_bytes <= 0:
+      continue
+    payload = {
+      "type": event_type,
+      "bytes": total_bytes,
+    }
+    try:
+      log(f"Enviando uso de datos agregado a {DATA_USAGE_URL}: {payload}")
+      resp = requests.post(DATA_USAGE_URL, json=payload, timeout=10)
+      resp.raise_for_status()
+      DATA_USAGE_BUFFER[event_type] = 0
+    except Exception as exc:  # noqa: BLE001
+      log(f"Error al enviar evento de uso de datos: {exc}")
 
 
 def _pir_poll_loop(cooldown_seconds: float) -> None:
@@ -255,11 +381,18 @@ def poll_and_execute_loop() -> None:
   # Inicializamos el sensor PIR (si está disponible)
   init_pir_sensor()
 
+  poll_count = 0
   while True:
     try:
+      poll_count += 1
       log(f"Consultando acciones en {CONTROL_URL}")
       resp = requests.get(CONTROL_URL, timeout=10)
       resp.raise_for_status()
+      try:
+        # Consideramos solo el cuerpo de la respuesta como tráfico medible aquí.
+        _add_data_usage("system", len(resp.content or b""))
+      except Exception:
+        pass
       data = resp.json()
       action = data.get("action", "none")
       stream_duration = int(data.get("streamDurationSeconds", 0) or 0)
@@ -275,6 +408,10 @@ def poll_and_execute_loop() -> None:
 
     except Exception as exc:  # noqa: BLE001
       log(f"Error al consultar acciones: {exc}")
+
+    # Telemetría de energía y de consumo de datos (no en cada iteración necesariamente)
+    _send_energy_sample_if_needed(poll_count)
+    _flush_data_usage_if_needed(poll_count)
 
     time.sleep(POLL_INTERVAL_SECONDS)
 

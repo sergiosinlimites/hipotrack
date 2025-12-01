@@ -63,46 +63,53 @@ export function useMockEvents() {
 
 export function useMockEnergyData() {
   const [energyHistory, setEnergyHistory] = useState([] as EnergyData[]);
-  const [currentData, setCurrentData] = useState({
-    voltage: 5.0,
-    current: 0.8,
-    watts: 4.0,
-    cpuTemp: 42,
-    timestamp: new Date(),
-  });
+  const [currentData, setCurrentData] = useState<EnergyData | null>(null);
 
   useEffect(() => {
-    // Initialize history with 10 points
-    const history: EnergyData[] = [];
-    for (let i = 9; i >= 0; i--) {
-      history.push({
-        voltage: 4.9 + Math.random() * 0.2,
-        current: 0.7 + Math.random() * 0.3,
-        watts: 3.5 + Math.random() * 1.0,
-        cpuTemp: 40 + Math.random() * 5,
-        timestamp: new Date(Date.now() - i * 60000),
-      });
-    }
-    setEnergyHistory(history);
+    const fetchEnergy = async () => {
+      try {
+        const res = await fetch(`/api/energy?ts=${Date.now()}`);
+        if (!res.ok) throw new Error('Error fetching energy data');
+        const data = await res.json();
 
-    // Update data every 5 seconds
-    const interval = setInterval(() => {
-      const newData: EnergyData = {
-        voltage: 4.9 + Math.random() * 0.2,
-        current: 0.7 + Math.random() * 0.3,
-        watts: 3.5 + Math.random() * 1.0,
-        cpuTemp: 40 + Math.random() * 5,
-        timestamp: new Date(),
-      };
-      
-      setCurrentData(newData);
-      setEnergyHistory(prev => [...prev.slice(-9), newData]);
-    }, 5000);
+        const mapped: EnergyData[] = (data || []).map((s: any) => ({
+          voltage: s.voltage,
+          current: s.current,
+          watts: s.watts,
+          cpuTemp: s.cpuTemp,
+          timestamp: new Date(s.timestamp),
+          cameraId: s.cameraId,
+          cameraName: s.cameraName,
+        }));
+
+        setEnergyHistory(mapped);
+        if (mapped.length > 0) {
+          setCurrentData(mapped[0]);
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('useMockEnergyData error', err);
+      }
+    };
+
+    fetchEnergy();
+    const interval = setInterval(fetchEnergy, 15000);
 
     return () => clearInterval(interval);
   }, []);
 
-  return { currentData, energyHistory };
+  // Fallback simple para no romper la UI si aún no hay datos reales
+  const effectiveCurrent =
+    currentData ||
+    ({
+      voltage: 5.0,
+      current: 0.8,
+      watts: 4.0,
+      cpuTemp: 42,
+      timestamp: new Date(),
+    } as EnergyData);
+
+  return { currentData: effectiveCurrent, energyHistory };
 }
 
 export function useMockSettings() {
@@ -123,73 +130,27 @@ export function useMockDataUsage() {
   });
 
   useEffect(() => {
-    // Generate initial data usage events
-    const initialEvents: DataUsageEvent[] = [];
-    const eventTypes: DataEventType[] = ['detection', 'photo', 'stream', 'system'];
-    const cameraIds = ['1', '2', '3', '4'];
-
-    // Generate events for the last 30 days
-    for (let i = 0; i < 200; i++) {
-      const randomType = eventTypes[Math.floor(Math.random() * eventTypes.length)];
-      let bytes = 0;
-      
-      // Different event types consume different amounts of data
-      switch (randomType) {
-        case 'detection':
-          bytes = 50 * 1024 + Math.random() * 150 * 1024; // 50-200 KB
-          break;
-        case 'photo':
-          bytes = 300 * 1024 + Math.random() * 700 * 1024; // 300KB-1MB
-          break;
-        case 'stream':
-          bytes = 5 * 1024 * 1024 + Math.random() * 15 * 1024 * 1024; // 5-20 MB
-          break;
-        case 'system':
-          bytes = 10 * 1024 + Math.random() * 90 * 1024; // 10-100 KB
-          break;
+    const fetchDataUsage = async () => {
+      try {
+        const res = await fetch(`/api/data-usage?ts=${Date.now()}`);
+        if (!res.ok) throw new Error('Error fetching data usage');
+        const data = await res.json();
+        const mapped: DataUsageEvent[] = (data || []).map((e: any) => ({
+          id: e.id,
+          type: e.type as DataEventType,
+          bytes: e.bytes,
+          timestamp: new Date(e.timestamp),
+          cameraId: e.cameraId,
+        }));
+        setEvents(mapped);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('useMockDataUsage error', err);
       }
+    };
 
-      initialEvents.push({
-        id: `data-event-${i}`,
-        type: randomType,
-        bytes,
-        timestamp: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000),
-        cameraId: randomType !== 'system' ? cameraIds[Math.floor(Math.random() * cameraIds.length)] : undefined,
-      });
-    }
-
-    setEvents(initialEvents.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()));
-
-    // Simulate new data events periodically
-    const interval = setInterval(() => {
-      const randomType = eventTypes[Math.floor(Math.random() * eventTypes.length)];
-      let bytes = 0;
-
-      switch (randomType) {
-        case 'detection':
-          bytes = 50 * 1024 + Math.random() * 150 * 1024;
-          break;
-        case 'photo':
-          bytes = 300 * 1024 + Math.random() * 700 * 1024;
-          break;
-        case 'stream':
-          bytes = 5 * 1024 * 1024 + Math.random() * 15 * 1024 * 1024;
-          break;
-        case 'system':
-          bytes = 10 * 1024 + Math.random() * 90 * 1024;
-          break;
-      }
-
-      const newEvent: DataUsageEvent = {
-        id: `data-event-${Date.now()}`,
-        type: randomType,
-        bytes,
-        timestamp: new Date(),
-        cameraId: randomType !== 'system' ? cameraIds[Math.floor(Math.random() * cameraIds.length)] : undefined,
-      };
-
-      setEvents(prev => [newEvent, ...prev].slice(0, 500));
-    }, 30000); // Every 30 seconds
+    fetchDataUsage();
+    const interval = setInterval(fetchDataUsage, 30000);
 
     return () => clearInterval(interval);
   }, []);

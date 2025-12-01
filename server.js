@@ -143,10 +143,53 @@ app.post('/api/cameras/:cameraId/energy', async (req, res) => {
 
     const saved = await energyRepo.save(sample);
 
+    // Actualizar último "ping" de la cámara
+    camera.last_seen_at = new Date();
+    await cameraRepo.save(camera);
+
     res.status(201).json({ ok: true, sample: saved });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('Error receiving energy data', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Receive data usage metrics from a Raspberry Pi
+app.post('/api/cameras/:cameraId/data-usage', async (req, res) => {
+  try {
+    const dataUsageRepo = AppDataSource.getRepository('DataUsageEvent');
+    const cameraRepo = AppDataSource.getRepository('Camera');
+    const { cameraId } = req.params;
+    const { type, bytes } = req.body || {};
+
+    const allowedTypes = ['detection', 'photo', 'stream', 'system'];
+    if (!allowedTypes.includes(type) || typeof bytes !== 'number' || bytes <= 0) {
+      return res.status(400).json({
+        error: 'type must be one of detection|photo|stream|system and bytes must be > 0',
+      });
+    }
+
+    const camera = await cameraRepo.findOne({ where: { id: cameraId } });
+
+    const event = dataUsageRepo.create({
+      type,
+      bytes,
+      camera,
+    });
+
+    const saved = await dataUsageRepo.save(event);
+
+    // Actualizar último "ping" de la cámara
+    if (camera) {
+      camera.last_seen_at = new Date();
+      await cameraRepo.save(camera);
+    }
+
+    res.status(201).json({ ok: true, event: saved });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error receiving data usage event', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -593,10 +636,87 @@ app.get('/api/cameras', async (_req, res) => {
   try {
     const cameraRepo = AppDataSource.getRepository('Camera');
     const cameras = await cameraRepo.find({ order: { created_at: 'ASC' } });
-    res.json(cameras);
+
+    const now = Date.now();
+    const onlineTimeoutSeconds = Number(process.env.ONLINE_TIMEOUT_SECONDS || '120');
+
+    const mapped = cameras.map((c) => {
+      let status = c.status;
+
+      if (!c.enabled) {
+        status = 'disabled';
+      } else if (c.last_seen_at) {
+        const lastSeen = new Date(c.last_seen_at).getTime();
+        const diffSeconds = (now - lastSeen) / 1000;
+        status = diffSeconds <= onlineTimeoutSeconds ? 'online' : 'waiting';
+      } else {
+        status = 'waiting';
+      }
+
+      return {
+        ...c,
+        status,
+      };
+    });
+
+    res.json(mapped);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('Error listing cameras', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Energy history for all cameras
+app.get('/api/energy', async (_req, res) => {
+  try {
+    const energyRepo = AppDataSource.getRepository('EnergySample');
+    const samples = await energyRepo.find({
+      relations: ['camera'],
+      order: { measured_at: 'DESC' },
+      take: 500,
+    });
+
+    const mapped = samples.map((s) => ({
+      voltage: s.voltage,
+      current: s.current,
+      watts: s.watts,
+      cpuTemp: s.cpu_temp,
+      timestamp: s.measured_at,
+      cameraId: s.camera ? s.camera.id : '',
+      cameraName: s.camera ? s.camera.name : 'Sin cámara',
+    }));
+
+    res.json(mapped);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error listing energy samples', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Data usage events history
+app.get('/api/data-usage', async (_req, res) => {
+  try {
+    const dataUsageRepo = AppDataSource.getRepository('DataUsageEvent');
+    const events = await dataUsageRepo.find({
+      relations: ['camera'],
+      order: { created_at: 'DESC' },
+      take: 1000,
+    });
+
+    const mapped = events.map((e) => ({
+      id: e.id,
+      type: e.type,
+      bytes: Number(e.bytes || 0),
+      timestamp: e.created_at,
+      cameraId: e.camera ? e.camera.id : undefined,
+    }));
+
+    res.json(mapped);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Error listing data usage events', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -609,25 +729,21 @@ app.post('/api/cameras', async (req, res) => {
       id,
       name,
       location,
-      status = 'waiting',
-      type = 'USB',
-      url = '',
       enabled = true,
-      thumbnail = null,
       coordinates = null,
     } = req.body || {};
 
     const cameraId = id || Date.now().toString();
+    const generatedUrl = `/uploads/${cameraId}`;
 
     const camera = cameraRepo.create({
       id: cameraId,
       name: name || `Camera ${cameraId}`,
       location: location || '',
-      status,
-      type,
-      url,
+      status: 'waiting',
+      type: 'USB',
+      url: generatedUrl,
       enabled,
-      thumbnail,
       coordinates,
       last_seen_at: null,
     });
@@ -649,9 +765,6 @@ app.put('/api/cameras/:cameraId', async (req, res) => {
     const {
       name,
       location,
-      status,
-      type,
-      url,
       enabled,
       thumbnail,
       coordinates,
@@ -664,9 +777,6 @@ app.put('/api/cameras/:cameraId', async (req, res) => {
 
     if (typeof name === 'string') camera.name = name;
     if (typeof location === 'string') camera.location = location;
-    if (typeof status === 'string') camera.status = status;
-    if (typeof type === 'string') camera.type = type;
-    if (typeof url === 'string') camera.url = url;
     if (typeof enabled === 'boolean') camera.enabled = enabled;
     if (typeof thumbnail === 'string' || thumbnail === null) camera.thumbnail = thumbnail;
     if (coordinates !== undefined) camera.coordinates = coordinates;

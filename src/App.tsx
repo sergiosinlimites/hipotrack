@@ -31,7 +31,12 @@ export default function App() {
   const { events, setEvents } = useMockEvents();
   const { currentData, energyHistory } = useMockEnergyData();
   const { settings, setSettings } = useMockSettings();
-  const { summary, dataLimit, setDataLimit } = useMockDataUsage();
+  const {
+    events: dataUsageEvents,
+    summary,
+    dataLimit,
+    setDataLimit,
+  } = useMockDataUsage();
 
   // Simulate connection status
   useEffect(() => {
@@ -42,14 +47,25 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const handleSaveCamera = async (cameraInput: Omit<Camera, 'id'> & { id?: string }) => {
+  const handleSaveCamera = async (cameraInput: {
+    id?: string;
+    name: string;
+    location: string;
+    enabled: boolean;
+    coordinates?: Camera['coordinates'];
+  }) => {
     try {
       // Si hay id, actualizamos. Si no, creamos una nueva cámara.
       if (cameraInput.id) {
         const res = await fetch(`/api/cameras/${cameraInput.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cameraInput),
+          body: JSON.stringify({
+            name: cameraInput.name,
+            location: cameraInput.location,
+            enabled: cameraInput.enabled,
+            coordinates: cameraInput.coordinates,
+          }),
         });
         if (!res.ok) throw new Error('Error al actualizar cámara');
         const updated: Camera = await res.json();
@@ -58,7 +74,12 @@ export default function App() {
         const res = await fetch('/api/cameras', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cameraInput),
+          body: JSON.stringify({
+            name: cameraInput.name,
+            location: cameraInput.location,
+            enabled: cameraInput.enabled,
+            coordinates: cameraInput.coordinates,
+          }),
         });
         if (!res.ok) throw new Error('Error al crear cámara');
         const created: Camera = await res.json();
@@ -201,11 +222,17 @@ export default function App() {
           {currentView === 'events' && <EventsGallery events={events} />}
 
           {currentView === 'energy' && (
-            <EnergyPanel currentData={currentData} history={energyHistory} />
+            <EnergyPanel currentData={currentData} history={energyHistory} cameras={cameras} />
           )}
 
           {currentView === 'data' && (
-            <DataPanel summary={summary} dataLimit={dataLimit} onUpdateLimit={setDataLimit} />
+            <DataPanel
+              events={dataUsageEvents}
+              summary={summary}
+              dataLimit={dataLimit}
+              onUpdateLimit={setDataLimit}
+              cameras={cameras}
+            />
           )}
 
           {currentView === 'map' && <MapView cameras={cameras} />}

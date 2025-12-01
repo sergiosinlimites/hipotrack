@@ -1,15 +1,39 @@
-import { EnergyData } from '../types';
+import { useMemo, useState } from 'react';
+import { Camera, EnergyData } from '../types';
 import { Battery, Zap, Cpu, TrendingUp } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 
 interface EnergyPanelProps {
   currentData: EnergyData;
   history: EnergyData[];
+  cameras: Camera[];
 }
 
-export function EnergyPanel({ currentData, history }: EnergyPanelProps) {
-  const chartData = history.map((data, index) => ({
-    time: `-${(history.length - index - 1)}m`,
+export function EnergyPanel({ currentData, history, cameras }: EnergyPanelProps) {
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('all');
+
+  const cameraOptions = useMemo(
+    () =>
+      cameras.map((c) => ({
+        id: c.id,
+        name: c.name,
+      })),
+    [cameras]
+  );
+
+  const filteredHistory = useMemo(
+    () =>
+      selectedCameraId === 'all'
+        ? history
+        : history.filter((d) => d.cameraId === selectedCameraId),
+    [history, selectedCameraId]
+  );
+
+  const latest = filteredHistory[0] || currentData;
+
+  const chartData = filteredHistory.map((data, index) => ({
+    time: `-${(filteredHistory.length - index - 1)}m`,
     watts: data.watts,
     temp: data.cpuTemp,
   }));
@@ -18,8 +42,28 @@ export function EnergyPanel({ currentData, history }: EnergyPanelProps) {
     <div>
       <div className="mb-6">
         <h2 className="text-gray-900">Energía</h2>
-        <p className="text-gray-600 mt-1">Monitoreo en tiempo real</p>
+        <p className="text-gray-600 mt-1">Monitoreo en tiempo real por cámara</p>
       </div>
+
+      {/* Camera filter */}
+      {cameraOptions.length > 0 && (
+        <div className="mb-4 flex items-center gap-3">
+          <span className="text-sm text-gray-600">Cámara:</span>
+          <Select value={selectedCameraId} onValueChange={setSelectedCameraId}>
+            <SelectTrigger className="w-60">
+              <SelectValue placeholder="Selecciona una cámara" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todas las cámaras</SelectItem>
+              {cameraOptions.map((camera) => (
+                <SelectItem key={camera.id} value={camera.id}>
+                  {camera.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       {/* Current metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -28,7 +72,7 @@ export function EnergyPanel({ currentData, history }: EnergyPanelProps) {
             <Battery className="size-4" />
             <span className="text-sm">Voltaje</span>
           </div>
-          <p className="text-gray-900">{currentData.voltage.toFixed(2)} V</p>
+          <p className="text-gray-900">{latest.voltage.toFixed(2)} V</p>
         </div>
 
         <div className="border border-gray-200 rounded-lg p-4">
@@ -36,7 +80,7 @@ export function EnergyPanel({ currentData, history }: EnergyPanelProps) {
             <TrendingUp className="size-4" />
             <span className="text-sm">Corriente</span>
           </div>
-          <p className="text-gray-900">{currentData.current.toFixed(2)} A</p>
+          <p className="text-gray-900">{latest.current.toFixed(2)} A</p>
         </div>
 
         <div className="border border-gray-200 rounded-lg p-4">
@@ -44,7 +88,7 @@ export function EnergyPanel({ currentData, history }: EnergyPanelProps) {
             <Zap className="size-4" />
             <span className="text-sm">Potencia</span>
           </div>
-          <p className="text-gray-900">{currentData.watts.toFixed(2)} W</p>
+          <p className="text-gray-900">{latest.watts.toFixed(2)} W</p>
         </div>
 
         <div className="border border-gray-200 rounded-lg p-4">
@@ -52,7 +96,7 @@ export function EnergyPanel({ currentData, history }: EnergyPanelProps) {
             <Cpu className="size-4" />
             <span className="text-sm">Temperatura CPU</span>
           </div>
-          <p className="text-gray-900">{currentData.cpuTemp.toFixed(1)} °C</p>
+          <p className="text-gray-900">{latest.cpuTemp.toFixed(1)} °C</p>
         </div>
       </div>
 

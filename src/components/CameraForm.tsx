@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Camera, CameraType } from '../types';
+import { Camera } from '../types';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -10,7 +10,7 @@ import { Plus, Edit, Trash2, TestTube, MapPin } from 'lucide-react';
 
 interface CameraFormProps {
   cameras: Camera[];
-  onSave: (camera: Omit<Camera, 'id'> & { id?: string }) => void;
+  onSave: (camera: { id?: string; name: string; location: string; enabled: boolean; coordinates?: Camera['coordinates'] }) => void;
   onDelete: (id: string) => void;
 }
 
@@ -20,12 +20,11 @@ export function CameraForm({ cameras, onSave, onDelete }: CameraFormProps) {
   const [formData, setFormData] = useState<Partial<Camera>>({
     name: '',
     location: '',
-    type: 'USB',
-    url: '',
     enabled: true,
     coordinates: undefined,
   });
   const [isGettingLocation, setIsGettingLocation] = useState(false);
+  const [revealedId, setRevealedId] = useState<string | null>(null);
 
   const handleEdit = (camera: Camera) => {
     setEditingCamera(camera);
@@ -38,8 +37,6 @@ export function CameraForm({ cameras, onSave, onDelete }: CameraFormProps) {
     setFormData({
       name: '',
       location: '',
-      type: 'USB',
-      url: '',
       enabled: true,
       coordinates: undefined,
     });
@@ -75,23 +72,16 @@ export function CameraForm({ cameras, onSave, onDelete }: CameraFormProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const payload: Omit<Camera, 'id'> & { id?: string } = {
+    const payload = {
       id: editingCamera?.id,
       name: formData.name || '',
       location: formData.location || '',
-      type: formData.type || 'USB',
-      url: formData.url || '',
       enabled: formData.enabled ?? true,
-      status: formData.enabled ? 'online' : 'disabled',
       coordinates: formData.coordinates,
     };
 
     onSave(payload);
     setIsOpen(false);
-  };
-
-  const handleTestSnapshot = () => {
-    alert('Probando snapshot de la cámara...');
   };
 
   return (
@@ -115,14 +105,25 @@ export function CameraForm({ cameras, onSave, onDelete }: CameraFormProps) {
               <h3 className="text-gray-900">{camera.name}</h3>
               <p className="text-sm text-gray-600 mt-1">{camera.location}</p>
               <div className="flex items-center gap-4 mt-2 text-sm text-gray-600">
-                <span>Tipo: {camera.type}</span>
-                <span>URL: {camera.url}</span>
+                    <span>ID: {revealedId === camera.id ? camera.id : '••••••••••'}</span>
                 <span className={camera.enabled ? 'text-emerald-600' : 'text-gray-500'}>
                   {camera.enabled ? 'Habilitada' : 'Deshabilitada'}
                 </span>
               </div>
             </div>
             <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setRevealedId((prev) => (prev === camera.id ? null : camera.id));
+                      if (navigator.clipboard) {
+                        navigator.clipboard.writeText(camera.id).catch(() => {});
+                      }
+                    }}
+                  >
+                    {revealedId === camera.id ? 'ID copiado' : 'Ver ID'}
+                  </Button>
               <Button variant="outline" size="sm" onClick={() => handleEdit(camera)}>
                 <Edit className="size-4" />
               </Button>
@@ -164,34 +165,6 @@ export function CameraForm({ cameras, onSave, onDelete }: CameraFormProps) {
                 id="location"
                 value={formData.location}
                 onChange={(e) => setFormData({ ...formData, location: e.target.value })}
-                required
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="type">Tipo</Label>
-              <Select 
-                value={formData.type} 
-                onValueChange={(value) => setFormData({ ...formData, type: value as CameraType })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="USB">USB</SelectItem>
-                  <SelectItem value="CSI">CSI</SelectItem>
-                  <SelectItem value="RTSP">RTSP</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="url">URL o Dispositivo</Label>
-              <Input
-                id="url"
-                value={formData.url}
-                onChange={(e) => setFormData({ ...formData, url: e.target.value })}
-                placeholder="/dev/video0 o rtsp://..."
                 required
               />
             </div>
@@ -258,12 +231,8 @@ export function CameraForm({ cameras, onSave, onDelete }: CameraFormProps) {
               />
             </div>
 
-            <div className="flex gap-2 pt-4">
-              <Button type="button" variant="outline" onClick={handleTestSnapshot} className="flex-1">
-                <TestTube className="size-4 mr-2" />
-                Probar Snapshot
-              </Button>
-              <Button type="submit" className="flex-1">
+            <div className="flex justify-end pt-4">
+              <Button type="submit" className="min-w-[120px]">
                 Guardar
               </Button>
             </div>

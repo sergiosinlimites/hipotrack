@@ -1,13 +1,16 @@
-import { DataUsageSummary, DataLimit } from '../types';
+import { useState, useMemo } from 'react';
+import { Camera, DataUsageEvent, DataUsageSummary, DataLimit, DataEventType } from '../types';
 import { Database, Image, Video, Activity, Edit2, Check, X } from 'lucide-react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { useState } from 'react';
 import { Button } from './ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 
 interface DataPanelProps {
+  events: DataUsageEvent[];
   summary: DataUsageSummary;
   dataLimit: DataLimit;
   onUpdateLimit: (limit: DataLimit) => void;
+  cameras: Camera[];
 }
 
 const formatBytes = (bytes: number): string => {
@@ -25,11 +28,70 @@ const COLORS = {
   system: '#6366f1',
 };
 
-export function DataPanel({ summary, dataLimit, onUpdateLimit }: DataPanelProps) {
+export function DataPanel({ events, summary, dataLimit, onUpdateLimit, cameras }: DataPanelProps) {
   const [isEditingLimit, setIsEditingLimit] = useState(false);
   const [editLimitGB, setEditLimitGB] = useState((dataLimit.maxBytes / (1024 * 1024 * 1024)).toString());
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('all');
 
-  const usagePercentage = (summary.total / dataLimit.maxBytes) * 100;
+  const cameraOptions = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          cameras.map((c) => [c.id, c.name])
+        ).entries()
+      ).map(([id, name]) => ({ id, name })),
+    [cameras]
+  );
+
+  const filteredEvents = useMemo(
+    () =>
+      selectedCameraId === 'all'
+        ? events
+        : events.filter((e) => e.cameraId === selectedCameraId),
+    [events, selectedCameraId]
+  );
+
+  const computeSummaryFromEvents = (evts: DataUsageEvent[]): DataUsageSummary => {
+    const byTypeBase: Record<DataEventType, number> = {
+      detection: 0,
+      photo: 0,
+      stream: 0,
+      system: 0,
+    };
+
+    const total = evts.reduce((sum, e) => sum + e.bytes, 0);
+    const byType = evts.reduce((acc, e) => {
+      acc[e.type] += e.bytes;
+      return acc;
+    }, { ...byTypeBase });
+
+    const dailyHistory = new Map<string, number>();
+    evts.forEach((event) => {
+      const dateKey = event.timestamp.toISOString().split('T')[0];
+      dailyHistory.set(dateKey, (dailyHistory.get(dateKey) || 0) + event.bytes);
+    });
+
+    const historyArray: { timestamp: Date; bytes: number }[] = [];
+    for (let i = 29; i >= 0; i--) {
+      const date = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+      const dateKey = date.toISOString().split('T')[0];
+      historyArray.push({
+        timestamp: date,
+        bytes: dailyHistory.get(dateKey) || 0,
+      });
+    }
+
+    return {
+      total,
+      byType,
+      history: historyArray,
+    };
+  };
+
+  const effectiveSummary: DataUsageSummary =
+    filteredEvents.length > 0 ? computeSummaryFromEvents(filteredEvents) : summary;
+
+  const usagePercentage = (effectiveSummary.total / dataLimit.maxBytes) * 100;
 
   const handleSaveLimit = () => {
     const newLimitGB = parseFloat(editLimitGB);
@@ -49,22 +111,22 @@ export function DataPanel({ summary, dataLimit, onUpdateLimit }: DataPanelProps)
 
   // Prepare data for pie chart
   const pieData = [
-    { name: 'Detecciones', value: summary.byType.detection, color: COLORS.detection },
-    { name: 'Fotos', value: summary.byType.photo, color: COLORS.photo },
-    { name: 'Streaming', value: summary.byType.stream, color: COLORS.stream },
-    { name: 'Sistema', value: summary.byType.system, color: COLORS.system },
+    { name: 'Detecciones', value: effectiveSummary.byType.detection, color: COLORS.detection },
+    { name: 'Fotos', value: effectiveSummary.byType.photo, color: COLORS.photo },
+    { name: 'Streaming', value: effectiveSummary.byType.stream, color: COLORS.stream },
+    { name: 'Sistema', value: effectiveSummary.byType.system, color: COLORS.system },
   ].filter(item => item.value > 0);
 
   // Prepare data for bar chart (by event type)
   const barData = [
-    { name: 'Detecciones', bytes: summary.byType.detection, mb: summary.byType.detection / (1024 * 1024) },
-    { name: 'Fotos', bytes: summary.byType.photo, mb: summary.byType.photo / (1024 * 1024) },
-    { name: 'Streaming', bytes: summary.byType.stream, mb: summary.byType.stream / (1024 * 1024) },
-    { name: 'Sistema', bytes: summary.byType.system, mb: summary.byType.system / (1024 * 1024) },
+    { name: 'Detecciones', bytes: effectiveSummary.byType.detection, mb: effectiveSummary.byType.detection / (1024 * 1024) },
+    { name: 'Fotos', bytes: effectiveSummary.byType.photo, mb: effectiveSummary.byType.photo / (1024 * 1024) },
+    { name: 'Streaming', bytes: effectiveSummary.byType.stream, mb: effectiveSummary.byType.stream / (1024 * 1024) },
+    { name: 'Sistema', bytes: effectiveSummary.byType.system, mb: effectiveSummary.byType.system / (1024 * 1024) },
   ];
 
   // Prepare data for line chart (daily usage)
-  const lineData = summary.history.map((item, index) => ({
+  const lineData = effectiveSummary.history.map((item, index) => ({
     day: `Día ${index + 1}`,
     mb: item.bytes / (1024 * 1024),
     date: item.timestamp.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' }),
@@ -74,15 +136,35 @@ export function DataPanel({ summary, dataLimit, onUpdateLimit }: DataPanelProps)
     <div>
       <div className="mb-6">
         <h2 className="text-gray-900">Consumo de Datos</h2>
-        <p className="text-gray-600 mt-1">Monitoreo de uso de SIM</p>
+        <p className="text-gray-600 mt-1">Monitoreo de uso de SIM por cámara</p>
       </div>
+
+      {/* Camera filter */}
+      {cameraOptions.length > 0 && (
+        <div className="mb-4 flex items-center gap-3">
+          <span className="text-sm text-gray-600">Cámara:</span>
+          <Select value={selectedCameraId} onValueChange={setSelectedCameraId}>
+            <SelectTrigger className="w-60">
+              <SelectValue placeholder="Selecciona una cámara" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todas las cámaras</SelectItem>
+              {cameraOptions.map((camera) => (
+                <SelectItem key={camera.id} value={camera.id}>
+                  {camera.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       {/* Usage Summary */}
       <div className="border border-gray-200 rounded-lg p-6 mb-6">
         <div className="flex items-start justify-between mb-4">
           <div>
             <p className="text-sm text-gray-600">Consumo Total</p>
-            <p className="text-gray-900 mt-1">{formatBytes(summary.total)}</p>
+            <p className="text-gray-900 mt-1">{formatBytes(effectiveSummary.total)}</p>
           </div>
           <div className="text-right">
             <p className="text-sm text-gray-600">Límite del Plan</p>
@@ -161,7 +243,7 @@ export function DataPanel({ summary, dataLimit, onUpdateLimit }: DataPanelProps)
           </div>
           <p className="text-gray-900">{formatBytes(summary.byType.detection)}</p>
           <p className="text-xs text-gray-500 mt-1">
-            {((summary.byType.detection / summary.total) * 100).toFixed(1)}% del total
+            {effectiveSummary.total > 0 ? ((effectiveSummary.byType.detection / effectiveSummary.total) * 100).toFixed(1) : '0.0'}% del total
           </p>
         </div>
 
@@ -170,9 +252,9 @@ export function DataPanel({ summary, dataLimit, onUpdateLimit }: DataPanelProps)
             <Image className="size-4" style={{ color: COLORS.photo }} />
             <span className="text-sm">Fotos Enviadas</span>
           </div>
-          <p className="text-gray-900">{formatBytes(summary.byType.photo)}</p>
+          <p className="text-gray-900">{formatBytes(effectiveSummary.byType.photo)}</p>
           <p className="text-xs text-gray-500 mt-1">
-            {((summary.byType.photo / summary.total) * 100).toFixed(1)}% del total
+            {effectiveSummary.total > 0 ? ((effectiveSummary.byType.photo / effectiveSummary.total) * 100).toFixed(1) : '0.0'}% del total
           </p>
         </div>
 
@@ -181,9 +263,9 @@ export function DataPanel({ summary, dataLimit, onUpdateLimit }: DataPanelProps)
             <Video className="size-4" style={{ color: COLORS.stream }} />
             <span className="text-sm">Streaming</span>
           </div>
-          <p className="text-gray-900">{formatBytes(summary.byType.stream)}</p>
+          <p className="text-gray-900">{formatBytes(effectiveSummary.byType.stream)}</p>
           <p className="text-xs text-gray-500 mt-1">
-            {((summary.byType.stream / summary.total) * 100).toFixed(1)}% del total
+            {effectiveSummary.total > 0 ? ((effectiveSummary.byType.stream / effectiveSummary.total) * 100).toFixed(1) : '0.0'}% del total
           </p>
         </div>
 
@@ -192,9 +274,9 @@ export function DataPanel({ summary, dataLimit, onUpdateLimit }: DataPanelProps)
             <Database className="size-4" style={{ color: COLORS.system }} />
             <span className="text-sm">Sistema</span>
           </div>
-          <p className="text-gray-900">{formatBytes(summary.byType.system)}</p>
+          <p className="text-gray-900">{formatBytes(effectiveSummary.byType.system)}</p>
           <p className="text-xs text-gray-500 mt-1">
-            {((summary.byType.system / summary.total) * 100).toFixed(1)}% del total
+            {effectiveSummary.total > 0 ? ((effectiveSummary.byType.system / effectiveSummary.total) * 100).toFixed(1) : '0.0'}% del total
           </p>
         </div>
       </div>

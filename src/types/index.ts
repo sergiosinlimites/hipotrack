@@ -49,6 +49,8 @@ export interface EnergyData {
   watts: number;
   cpuTemp: number;
   timestamp: Date;
+  cameraId?: string;
+  cameraName?: string;
 }
 
 export interface AppSettings {
