@@ -24,6 +24,7 @@ read_with_default CAMERA_ID "ID de la cámara (copiado desde el frontend)" "0000
 read_with_default SERVER_HOST "Host del servidor" "192.168.1.6"
 read_with_default SERVER_PORT "Puerto del servidor" "3001"
 read_with_default USE_HTTPS "¿Usar HTTPS? (true/false)" "false"
+read_with_default CAMERA_API_TOKEN "Token de la cámara" "tu_token_secreto_compartido"
 
 read_with_default POLL_INTERVAL_SECONDS "Segundos entre consultas al servidor" "15"
 read_with_default FRAME_INTERVAL_SECONDS "Segundos entre frames de streaming" "1"
