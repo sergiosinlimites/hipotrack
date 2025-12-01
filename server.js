@@ -19,6 +19,18 @@ const server = http.createServer(app);
 // Middlewares
 app.use(express.json({ limit: '10mb' }));
 
+// Simple auth for camera-to-backend communication
+const CAMERA_API_TOKEN = process.env.CAMERA_API_TOKEN;
+
+const verifyCameraAuth = (req, res, next) => {
+  if (!CAMERA_API_TOKEN) return next();
+  const token = req.headers['x-api-key'];
+  if (!token || token !== CAMERA_API_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized camera request' });
+  }
+  return next();
+};
+
 // In-memory stores for demo / development (non-persistent).
 const latestFrames = new Map(); // cameraId -> { buffer, timestamp }
 const cameraActions = new Map(); // cameraId -> { photoRequested?: boolean, photoRequestedAt?: number, streamUntil?: number, currentStreamSessionId?: string }
@@ -29,7 +41,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 // Register or update a camera status from a Raspberry Pi
-app.post('/api/cameras/:cameraId/status', async (req, res) => {
+app.post('/api/cameras/:cameraId/status', verifyCameraAuth, async (req, res) => {
   try {
     const cameraRepo = AppDataSource.getRepository('Camera');
     const { cameraId } = req.params;
@@ -83,7 +95,7 @@ app.post('/api/cameras/:cameraId/status', async (req, res) => {
 });
 
 // Receive an event (generic) from a Raspberry Pi
-app.post('/api/cameras/:cameraId/events', async (req, res) => {
+app.post('/api/cameras/:cameraId/events', verifyCameraAuth, async (req, res) => {
   try {
     const eventRepo = AppDataSource.getRepository('Event');
     const cameraRepo = AppDataSource.getRepository('Camera');
@@ -109,7 +121,7 @@ app.post('/api/cameras/:cameraId/events', async (req, res) => {
 });
 
 // Receive energy / telemetry data from a Raspberry Pi
-app.post('/api/cameras/:cameraId/energy', async (req, res) => {
+app.post('/api/cameras/:cameraId/energy', verifyCameraAuth, async (req, res) => {
   try {
     const energyRepo = AppDataSource.getRepository('EnergySample');
     const cameraRepo = AppDataSource.getRepository('Camera');
@@ -156,7 +168,7 @@ app.post('/api/cameras/:cameraId/energy', async (req, res) => {
 });
 
 // Receive data usage metrics from a Raspberry Pi
-app.post('/api/cameras/:cameraId/data-usage', async (req, res) => {
+app.post('/api/cameras/:cameraId/data-usage', verifyCameraAuth, async (req, res) => {
   try {
     const dataUsageRepo = AppDataSource.getRepository('DataUsageEvent');
     const cameraRepo = AppDataSource.getRepository('Camera');
@@ -454,7 +466,7 @@ app.get('/api/cameras/:cameraId/live-frame', (req, res) => {
 
 // Endpoint para recibir frames de streaming vía HTTP (alternativa al WebSocket).
 // POST /api/cameras/:cameraId/live-frame  (multipart/form-data, campo "image")
-app.post('/api/cameras/:cameraId/live-frame', memoryUpload.single('image'), async (req, res) => {
+app.post('/api/cameras/:cameraId/live-frame', verifyCameraAuth, memoryUpload.single('image'), async (req, res) => {
   try {
     const { cameraId } = req.params;
 
@@ -602,7 +614,7 @@ app.post('/api/cameras/:cameraId/request-stream', async (req, res) => {
 // Endpoint que la Raspberry consulta periódicamente para saber si debe tomar foto o hacer streaming.
 // GET /api/camera/:cameraId/take-photo-or-video
 // Respuesta: { action: "none" | "photo" | "stream", streamDurationSeconds?: number }
-app.get('/api/camera/:cameraId/take-photo-or-video', (req, res) => {
+app.get('/api/camera/:cameraId/take-photo-or-video', verifyCameraAuth, (req, res) => {
   const { cameraId } = req.params;
   const now = Date.now();
   const actions = cameraActions.get(cameraId) || {};

@@ -1,6 +1,7 @@
 import { Video, Image, Zap, Settings, Menu, X, Database, Map } from 'lucide-react';
 import { Button } from './ui/button';
 import { useState } from 'react';
+import hipotrackLogo from '../assets/hipotrack_logo.png';
 
 type View = 'cameras' | 'events' | 'energy' | 'data' | 'map' | 'config' | 'settings';
 
@@ -51,14 +52,20 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
       {/* Sidebar */}
       <aside
         className={`
-          fixed lg:sticky top-0 left-0 h-screen w-64 bg-gray-900 text-white p-4 z-40
+          fixed lg:sticky top-0 left-0 h-screen w-64 bg-white text-slate-900 border-r border-slate-200 p-4 z-40
           transition-transform duration-300
           ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
         `}
       >
         <div className="mb-8 pt-12 lg:pt-0">
-          <h1 className="text-xl text-white">Monitor IoT</h1>
-          <p className="text-sm text-gray-400 mt-1">Sistema de Cámaras</p>
+          <div className="flex items-center gap-3">
+            <img
+              src={hipotrackLogo}
+              alt="Hipotrack"
+              className="h-40 w-auto lg:h-11"
+            />
+          </div>
+          <p className="text-sm text-sky-700 mt-2 tracking-wide">Monitoreo energético y visual</p>
         </div>
 
         <nav className="space-y-2">
@@ -75,22 +82,22 @@ export function Sidebar({ currentView, onViewChange }: SidebarProps) {
                   transition-colors
                   ${
                     isActive
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-300 hover:bg-gray-800'
+                      ? 'bg-sky-100 text-sky-700'
+                      : 'text-slate-600 hover:bg-slate-100'
                   }
                 `}
               >
                 <Icon className="size-5" />
-                <span>{item.label}</span>
+                <span className="text-sm font-medium">{item.label}</span>
               </button>
             );
           })}
         </nav>
 
         <div className="absolute bottom-4 left-4 right-4">
-          <div className="border-t border-gray-700 pt-4">
-            <p className="text-xs text-gray-500">Sistema v1.0.0</p>
-            <p className="text-xs text-gray-500 mt-1">
+          <div className="border-t border-slate-200 pt-4">
+            <p className="text-xs text-slate-400">Hipotrack v1.0.0</p>
+            <p className="text-xs text-slate-400 mt-1">
               Tiempo activo: 2d 14h
             </p>
           </div>

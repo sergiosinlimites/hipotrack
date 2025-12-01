@@ -4,6 +4,7 @@ import { Camera } from '../types';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { ImageWithFallback } from './figma/ImageWithFallback';
+import hipotrackPlaceholder from '../assets/hipotrack-placeholder.svg';
 
 interface StreamingModalProps {
   camera: Camera | null;
@@ -56,7 +57,7 @@ export function StreamingModal({ camera, isOpen, onClose, timeout }: StreamingMo
   const streamSrc =
     camera && isOpen
       ? `/api/cameras/${camera.id}/live-frame?ts=${frameTick}`
-      : 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&q=60';
+      : hipotrackPlaceholder;
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>

@@ -3,6 +3,7 @@ import { Video, MapPin, Camera as CameraIcon } from 'lucide-react';
 import { Camera } from '../types';
 import { Button } from './ui/button';
 import { ImageWithFallback } from './figma/ImageWithFallback';
+import hipotrackPlaceholder from '../assets/hipotrack-placeholder.svg';
 
 interface CameraCardProps {
   camera: Camera;
@@ -30,7 +31,7 @@ const statusLabels = {
 
 export function CameraCard({ camera, onRequestStream, onRequestPhoto }: CameraCardProps) {
   const thumbnailSrc =
-    camera.thumbnail || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=400&q=50';
+    camera.thumbnail || hipotrackPlaceholder;
 
   return (
     <div className={`border rounded-lg overflow-hidden ${statusColors[camera.status]}`}>

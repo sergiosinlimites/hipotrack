@@ -86,7 +86,7 @@ export function PhotoCaptureModal({ camera, isOpen, onClose }: PhotoCaptureModal
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="max-w-3xl w-[95vw]">
         <DialogHeader>
           <DialogTitle>Tomar foto: {camera.name}</DialogTitle>
         </DialogHeader>
@@ -108,11 +108,11 @@ export function PhotoCaptureModal({ camera, isOpen, onClose }: PhotoCaptureModal
 
           {status === 'received' && imageUrl && (
             <div className="space-y-3">
-              <div className="bg-gray-900 rounded-lg overflow-hidden">
+              <div className="bg-gray-900 rounded-lg overflow-hidden max-h-[70vh] flex items-center justify-center">
                 <ImageWithFallback
                   src={imageUrl}
                   alt={`Foto de ${camera.name}`}
-                  className="w-full h-auto"
+                  className="max-h-[70vh] w-auto max-w-full object-contain"
                 />
               </div>
               <p className="text-xs text-gray-600">

@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent } from './ui/dialog';
 import { Button } from './ui/button';
 import { ImageWithFallback } from './figma/ImageWithFallback';
+import hipotrackPlaceholder from '../assets/hipotrack-placeholder.svg';
 
 interface EventsGalleryProps {
   events: Event[];
@@ -108,7 +109,7 @@ export function EventsGallery({ events }: EventsGalleryProps) {
           >
             <div className="aspect-video bg-gray-900 rounded overflow-hidden mb-2 relative">
               <ImageWithFallback
-                src={event.thumbnail || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=200&q=50'}
+                src={event.thumbnail || hipotrackPlaceholder}
                 alt={event.cameraName}
                 className="w-full h-full object-cover group-hover:opacity-75 transition-opacity"
               />

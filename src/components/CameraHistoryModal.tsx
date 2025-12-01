@@ -1,6 +1,7 @@
 import { Camera } from '../types';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { ImageWithFallback } from './figma/ImageWithFallback';
+import hipotrackPlaceholder from '../assets/hipotrack-placeholder.svg';
 import { useState } from 'react';
 
 interface CameraHistoryModalProps {
@@ -31,7 +32,7 @@ export function CameraHistoryModal({ camera, isOpen, onClose }: CameraHistoryMod
           <div className="space-y-3">
             <div className="bg-gray-900 rounded-lg overflow-hidden aspect-video">
               <ImageWithFallback
-                src="https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&q=70"
+                src={hipotrackPlaceholder}
                 alt="Snapshot"
                 className="w-full h-full object-cover"
               />
@@ -58,7 +59,7 @@ export function CameraHistoryModal({ camera, isOpen, onClose }: CameraHistoryMod
               >
                 <div className="aspect-video bg-gray-900 rounded overflow-hidden mb-1">
                   <ImageWithFallback
-                    src="https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=200&q=50"
+                    src={hipotrackPlaceholder}
                     alt={`Snapshot ${index + 1}`}
                     className="w-full h-full object-cover group-hover:opacity-75 transition-opacity"
                   />

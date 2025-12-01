@@ -72,7 +72,7 @@ ENERGY_SAMPLE_EVERY_POLLS = int(os.getenv("ENERGY_SAMPLE_EVERY_POLLS", "5"))
 
 # Telemetría de uso de datos (basada en bytes enviados/recibidos por HTTP)
 DATA_USAGE_ENABLED = os.getenv("DATA_USAGE_ENABLED", "true").lower() == "true"
-DATA_USAGE_FLUSH_EVERY_POLLS = int(os.getenv("DATA_USAGE_FLUSH_EVERY_POLLS", "5"))
+DATA_USAGE_FLUSH_EVERY_POLLS = int(os.getenv("DATA_USAGE_FLUSH_EVERY_POLLS", "4"))
 
 # Buffer local de consumo de datos por tipo
 DATA_USAGE_BUFFER = {
@@ -84,6 +84,12 @@ DATA_USAGE_BUFFER = {
 
 # Pin GPIO usado para el sensor PIR (modo BCM)
 PIR_PIN = int(os.getenv("PIR_PIN", "4"))
+
+# Duración del streaming cuando se dispara por PIR (segundos)
+PIR_STREAM_DURATION_SECONDS = int(os.getenv("PIR_STREAM_DURATION_SECONDS", "30"))
+
+# Token de autenticación compartido con el backend
+CAMERA_API_TOKEN = os.getenv("CAMERA_API_TOKEN", "").strip()
 
 # Lock para evitar que se lancen capturas simultáneas (PIR + petición remota + streaming)
 CAPTURE_LOCK = threading.Lock()
@@ -101,6 +107,16 @@ if WS_DEBUG:
 
 # Debug opcional del PIR para ver cambios de nivel en GPIO4
 PIR_DEBUG = os.getenv("PIR_DEBUG", "false").lower() == "true"
+
+
+def _auth_headers() -> dict:
+  """
+  Cabeceras de autenticación para llamadas al backend.
+  Si CAMERA_API_TOKEN está vacío, no se añade nada (modo sin auth).
+  """
+  if not CAMERA_API_TOKEN:
+    return {}
+  return {"X-Api-Key": CAMERA_API_TOKEN}
 
 
 def capture_photo_with_fswebcam() -> str:
@@ -146,7 +162,7 @@ def upload_photo(file_path: str) -> None:
   with open(file_path, "rb") as f:
     files = {"image": ("snapshot.jpg", f, "image/jpeg")}
     try:
-      resp = requests.post(PHOTO_UPLOAD_URL, files=files, timeout=15)
+      resp = requests.post(PHOTO_UPLOAD_URL, files=files, headers=_auth_headers(), timeout=15)
       resp.raise_for_status()
       data = resp.json()
       resp_bytes = len(resp.content or b"") if hasattr(resp, "content") else 0
@@ -200,7 +216,7 @@ def stream_for_duration(duration_seconds: int) -> None:
             log("Frame vacío, se omite el envío")
           else:
             files = {"image": ("frame.jpg", data, "image/jpeg")}
-            resp = requests.post(LIVE_FRAME_UPLOAD_URL, files=files, timeout=10)
+            resp = requests.post(LIVE_FRAME_UPLOAD_URL, files=files, headers=_auth_headers(), timeout=10)
             resp.raise_for_status()
             resp_bytes = len(resp.content or b"") if hasattr(resp, "content") else 0
             _add_data_usage("stream", len(data) + resp_bytes)
@@ -217,6 +233,27 @@ def stream_for_duration(duration_seconds: int) -> None:
 
   finally:
     log("Streaming finalizado")
+
+
+def _request_stream_session(duration_seconds: int) -> None:
+  """
+  Solicita al backend que cree una sesión de streaming y programe la generación del MP4.
+  Reutiliza el mismo endpoint que el frontend: POST /api/cameras/:id/request-stream.
+  """
+  url = f"{BASE_HTTP_URL}/api/cameras/{CAMERA_ID}/request-stream"
+  payload = {
+    "durationSeconds": duration_seconds,
+  }
+  try:
+    log(f"Solicitando sesión de streaming al backend por {duration_seconds}s en {url}")
+    resp = requests.post(url, json=payload, headers=_auth_headers(), timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    resp_bytes = len(resp.content or b"") if hasattr(resp, "content") else 0
+    _add_data_usage("system", len(str(payload).encode("utf-8")) + resp_bytes)
+    log(f"Sesión de streaming creada correctamente: {data}")
+  except Exception as exc:  # noqa: BLE001
+    log(f"Error al solicitar sesión de streaming: {exc}")
 
 
 def _read_cpu_temperature() -> float | None:
@@ -269,7 +306,7 @@ def _send_energy_sample_if_needed(poll_count: int) -> None:
 
   try:
     log(f"Enviando muestra de energía a {ENERGY_URL}: {payload}")
-    resp = requests.post(ENERGY_URL, json=payload, timeout=10)
+    resp = requests.post(ENERGY_URL, json=payload, headers=_auth_headers(), timeout=10)
     resp.raise_for_status()
     resp_bytes = len(resp.content or b"") if hasattr(resp, "content") else 0
     _add_data_usage("system", len(str(payload).encode("utf-8")) + resp_bytes)
@@ -310,11 +347,35 @@ def _flush_data_usage_if_needed(poll_count: int) -> None:
     }
     try:
       log(f"Enviando uso de datos agregado a {DATA_USAGE_URL}: {payload}")
-      resp = requests.post(DATA_USAGE_URL, json=payload, timeout=10)
+      resp = requests.post(DATA_USAGE_URL, json=payload, headers=_auth_headers(), timeout=10)
       resp.raise_for_status()
       DATA_USAGE_BUFFER[event_type] = 0
     except Exception as exc:  # noqa: BLE001
       log(f"Error al enviar evento de uso de datos: {exc}")
+
+
+def _handle_pir_detection() -> None:
+  """
+  Flujo completo cuando el PIR detecta presencia:
+  1. Tomar y enviar una foto.
+  2. Solicitar una sesión de streaming de PIR_STREAM_DURATION_SECONDS.
+  3. Enviar frames durante PIR_STREAM_DURATION_SECONDS segundos.
+  """
+  try:
+    log("PIR: inicio de flujo de detección (foto + video)")
+    handle_photo_action()
+  except Exception as exc:  # noqa: BLE001
+    log(f"PIR: error al tomar/enviar foto: {exc}")
+
+  try:
+    _request_stream_session(PIR_STREAM_DURATION_SECONDS)
+  except Exception as exc:  # noqa: BLE001
+    log(f"PIR: error al solicitar sesión de streaming: {exc}")
+
+  try:
+    stream_for_duration(PIR_STREAM_DURATION_SECONDS)
+  except Exception as exc:  # noqa: BLE001
+    log(f"PIR: error durante el streaming: {exc}")
 
 
 def _pir_poll_loop(cooldown_seconds: float) -> None:
@@ -340,9 +401,9 @@ def _pir_poll_loop(cooldown_seconds: float) -> None:
         last_value = value
       now_ts = time.time()
       if value == GPIO.HIGH and now_ts - last_shot >= cooldown_seconds:
-        log(f"PIR en ALTO en GPIO {PIR_PIN}. Disparando foto (poll loop).")
+        log(f"PIR en ALTO en GPIO {PIR_PIN}. Disparando flujo foto+video (poll loop).")
         last_shot = now_ts
-        thread = threading.Thread(target=handle_photo_action, daemon=True)
+        thread = threading.Thread(target=_handle_pir_detection, daemon=True)
         thread.start()
       time.sleep(0.1)
     except Exception as exc:  # noqa: BLE001
@@ -386,7 +447,7 @@ def poll_and_execute_loop() -> None:
     try:
       poll_count += 1
       log(f"Consultando acciones en {CONTROL_URL}")
-      resp = requests.get(CONTROL_URL, timeout=10)
+      resp = requests.get(CONTROL_URL, headers=_auth_headers(), timeout=10)
       resp.raise_for_status()
       try:
         # Consideramos solo el cuerpo de la respuesta como tráfico medible aquí.
