@@ -10,3 +10,5 @@ package-lock.json
 /build
 /dist
 /yolo
+/otro_proyecto
+/venv
