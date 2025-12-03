@@ -9,6 +9,10 @@ package-lock.json
 /build/**/*
 /build
 /dist
-/yolo
+/yolo/animals
+/yolo/hipos
+/yolo/general
+/yolo/unified_yolo_dataset
 /otro_proyecto
 /venv
+/esp32/.pio

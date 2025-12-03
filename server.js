@@ -13,6 +13,22 @@ const PORT = process.env.PORT || 3000;
 const STREAM_FPS = Number(process.env.STREAM_FPS || '1'); // fps usados al generar el MP4
 const FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
 
+// Rutas/ejecutables para la inferencia de hipopótamos con YOLO
+// Ajusta estas rutas mediante variables de entorno si cambia el modelo o el entorno.
+const PYTHON_PATH = process.env.PYTHON_PATH || path.join(__dirname, 'venv', 'bin', 'python');
+const HIPPO_INFERENCE_SCRIPT =
+  process.env.HIPPO_INFERENCE_SCRIPT || path.join(__dirname, 'yolo', 'hippo_inference.py');
+const HIPPO_MODEL_PATH =
+  process.env.HIPPO_MODEL_PATH ||
+  path.join(
+    __dirname,
+    'yolo',
+    'unified_yolo_dataset',
+    'hippo_all_animals4',
+    'weights',
+    'best.pt'
+  );
+
 // HTTP server (needed to attach WebSocket server)
 const server = http.createServer(app);
 
@@ -32,7 +48,8 @@ const verifyCameraAuth = (req, res, next) => {
 };
 
 // In-memory stores for demo / development (non-persistent).
-const latestFrames = new Map(); // cameraId -> { buffer, timestamp }
+// latestFrames: cameraId -> { buffer, timestamp, hasHippo?: boolean, hippoDetection?: any }
+const latestFrames = new Map();
 const cameraActions = new Map(); // cameraId -> { photoRequested?: boolean, photoRequestedAt?: number, streamUntil?: number, currentStreamSessionId?: string }
 
 // Healthcheck
@@ -339,6 +356,92 @@ const scheduleVideoGeneration = (sessionId, durationSeconds) => {
   }, delayMs);
 };
 
+// ----------------------------
+// Helper para inferencia de hipopótamos con YOLO (script Python)
+// ----------------------------
+
+/**
+ * Ejecuta el script de inferencia de hipopótamos sobre una imagen y devuelve
+ * el resultado parseado (cuando es posible).
+ *
+ * Devuelve una promesa con un objeto del estilo:
+ *   { ok: true, image, num_hippos, hippos: [...] }
+ * o, en caso de error:
+ *   { ok: false, error, code?, stderr?, raw? }
+ */
+const runHippoInference = (imagePath, confThreshold = 0.4) =>
+  new Promise((resolve) => {
+    try {
+      if (!fs.existsSync(HIPPO_INFERENCE_SCRIPT) || !fs.existsSync(HIPPO_MODEL_PATH)) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          'Script o modelo de hipopótamos no encontrados, se omite inferencia:',
+          HIPPO_INFERENCE_SCRIPT,
+          HIPPO_MODEL_PATH
+        );
+        resolve({ ok: false, error: 'inference_disabled' });
+        return;
+      }
+
+      const args = [
+        HIPPO_INFERENCE_SCRIPT,
+        '--image',
+        imagePath,
+        '--weights',
+        HIPPO_MODEL_PATH,
+        '--conf',
+        String(confThreshold),
+        '--json',
+      ];
+
+      const child = spawn(PYTHON_PATH, args);
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      child.on('close', (code) => {
+        if (code !== 0) {
+          // eslint-disable-next-line no-console
+          console.error('Hippo inference script failed', { code, stderr });
+          resolve({ ok: false, error: 'inference_failed', code, stderr });
+          return;
+        }
+
+        const lastLine = stdout
+          .trim()
+          .split('\n')
+          .filter((l) => l.trim().length > 0)
+          .pop();
+
+        if (!lastLine) {
+          resolve({ ok: false, error: 'empty_output', raw: stdout, stderr });
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(lastLine);
+          resolve({ ok: true, ...parsed });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('Error parsing hippo inference JSON output', err, stdout);
+          resolve({ ok: false, error: 'invalid_json', raw: stdout, stderr });
+        }
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Unexpected error running hippo inference', err);
+      resolve({ ok: false, error: 'unexpected_error' });
+    }
+  });
+
 // Endpoint para que la Raspberry envíe una foto puntual (snapshot)
 // POST /api/cameras/:cameraId/photo  (multipart/form-data, campo "image")
 app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res) => {
@@ -359,6 +462,7 @@ app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res
     }
 
     const relativeUrl = `/uploads/${cameraId}/photos/${req.file.filename}`;
+    const absolutePath = req.file.path; // ruta en disco que usaremos para la inferencia
 
     // Guardar la foto en la base de datos
     const photo = photoRepo.create({
@@ -370,18 +474,42 @@ app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res
     });
     const savedPhoto = await photoRepo.save(photo);
 
+    // Ejecutar inferencia de hipopótamos (no bloquea si el script/modelo no están disponibles)
+    const detection = await runHippoInference(absolutePath).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('Error running hippo inference', err);
+      return { ok: false, error: 'inference_exception' };
+    });
+
+    let hippoDetection = null;
+    let hasHippo = false;
+
+    if (detection && detection.ok) {
+      hippoDetection = {
+        numHippos: detection.num_hippos,
+        hippos: detection.hippos,
+      };
+      hasHippo = (detection.num_hippos || 0) > 0;
+    }
+
     // Actualizar thumbnail de la cámara con la última foto
     camera.thumbnail = relativeUrl;
     await cameraRepo.save(camera);
 
     // Registrar un evento asociado a esta foto
+    const eventPayload = {
+      image_path: relativeUrl,
+      photo_id: savedPhoto.id,
+    };
+
+    if (hippoDetection) {
+      eventPayload.hippo_detection = hippoDetection;
+    }
+
     const event = eventRepo.create({
       type: 'photo',
       filepath: relativeUrl,
-      payload: {
-        image_path: relativeUrl,
-        photo_id: savedPhoto.id,
-      },
+      payload: eventPayload,
       camera,
     });
     const savedEvent = await eventRepo.save(event);
@@ -395,6 +523,10 @@ app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res
       timestamp: savedEvent.created_at || new Date(),
       imageUrl: relativeUrl,
       thumbnail: relativeUrl,
+       // Datos adicionales para que el frontend (o cualquier consumidor)
+       // pueda saber si se detectó hipopótamo y, si quiere, mostrarlo.
+      hasHippo,
+      hippoDetection,
     });
 
     res.status(201).json({
@@ -402,6 +534,8 @@ app.post('/api/cameras/:cameraId/photo', upload.single('image'), async (req, res
       imageUrl: relativeUrl,
       photo: savedPhoto,
       event: savedEvent,
+      hasHippo,
+      hippoDetection,
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -416,6 +550,7 @@ app.get('/api/cameras/:cameraId/latest-photo', async (req, res) => {
     const { cameraId } = req.params;
     const photoRepo = AppDataSource.getRepository('Photo');
     const cameraRepo = AppDataSource.getRepository('Camera');
+    const eventRepo = AppDataSource.getRepository('Event');
 
     const camera = await cameraRepo.findOne({ where: { id: cameraId } });
     if (!camera) {
@@ -432,6 +567,30 @@ app.get('/api/cameras/:cameraId/latest-photo', async (req, res) => {
       return res.status(404).json({ error: 'No photos for this camera' });
     }
 
+    // Intentar recuperar información de detección de hipopótamos del último evento asociado.
+    // En lugar de filtrar por filepath (que puede no coincidir en algunos casos),
+    // tomamos simplemente el último evento de tipo "photo" para esta cámara.
+    let hasHippo = false;
+    let hippoDetection = null;
+
+    try {
+      const lastEvent = await eventRepo.findOne({
+        where: { type: 'photo', camera: { id: cameraId } },
+        order: { created_at: 'DESC' },
+      });
+
+      if (lastEvent && lastEvent.payload && lastEvent.payload.hippo_detection) {
+        hippoDetection = lastEvent.payload.hippo_detection;
+        hasHippo =
+          hippoDetection &&
+          typeof hippoDetection.numHippos === 'number' &&
+          hippoDetection.numHippos > 0;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Error fetching hippo detection for latest photo', err);
+    }
+
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
     res.json({
@@ -441,6 +600,8 @@ app.get('/api/cameras/:cameraId/latest-photo', async (req, res) => {
       imageUrl: photo.image_path,
       thumbnail: photo.thumbnail_path || photo.image_path,
       capturedAt: photo.captured_at,
+      hasHippo,
+      hippoDetection,
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -455,13 +616,35 @@ app.get('/api/cameras/:cameraId/live-frame', (req, res) => {
   const { cameraId } = req.params;
   const frame = latestFrames.get(cameraId);
 
-  if (!frame) {
+  if (!frame || !frame.buffer) {
     return res.status(404).json({ error: 'No live frame available for this camera' });
   }
 
   res.setHeader('Content-Type', 'image/jpeg');
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.send(frame.buffer);
+});
+
+// Último resultado de detección de hipopótamos sobre frames en vivo
+// GET /api/cameras/:cameraId/live-frame-detection
+app.get('/api/cameras/:cameraId/live-frame-detection', (req, res) => {
+  const { cameraId } = req.params;
+  const frame = latestFrames.get(cameraId);
+
+  if (!frame) {
+    return res.status(404).json({ error: 'No live frame available for this camera' });
+  }
+
+  const hasHippo = !!frame.hasHippo;
+  const hippoDetection = frame.hippoDetection || null;
+
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  return res.json({
+    cameraId,
+    timestamp: frame.timestamp,
+    hasHippo,
+    hippoDetection,
+  });
 });
 
 // Endpoint para recibir frames de streaming vía HTTP (alternativa al WebSocket).
@@ -474,10 +657,12 @@ app.post('/api/cameras/:cameraId/live-frame', verifyCameraAuth, memoryUpload.sin
       return res.status(400).json({ error: 'Missing image file in "image" field' });
     }
 
-    // Actualizar último frame en memoria
+    const nowTs = Date.now();
+
+    // Actualizar último frame en memoria (detección se rellenará más abajo si procede)
     latestFrames.set(cameraId, {
       buffer: req.file.buffer,
-      timestamp: Date.now(),
+      timestamp: nowTs,
     });
 
     // Guardar frame en disco dentro de una carpeta de vídeo por sesión
@@ -485,7 +670,7 @@ app.post('/api/cameras/:cameraId/live-frame', verifyCameraAuth, memoryUpload.sin
     const sessionId = actions.currentStreamSessionId || `${Date.now()}`;
     const videoDir = path.join(uploadsRoot, cameraId || 'unknown', 'videos', sessionId);
     fs.mkdirSync(videoDir, { recursive: true });
-    const filename = `${Date.now()}.jpg`;
+    const filename = `${nowTs}.jpg`;
     const fullPath = path.join(videoDir, filename);
 
     try {
@@ -493,6 +678,37 @@ app.post('/api/cameras/:cameraId/live-frame', verifyCameraAuth, memoryUpload.sin
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('Error writing video frame to disk', err);
+    }
+
+    // Ejecutar inferencia de hipopótamos sobre el frame de streaming,
+    // igual que hacemos con las fotos. Esto garantiza que la detección
+    // en vivo se comporte igual que la de fotos individuales.
+    try {
+      const detection = await runHippoInference(fullPath).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('Error running hippo inference (live-frame)', err);
+        return { ok: false, error: 'inference_exception' };
+      });
+
+      if (detection && detection.ok) {
+        const hippoDetection = {
+          numHippos: detection.num_hippos,
+          hippos: detection.hippos,
+        };
+        const hasHippo = (detection.num_hippos || 0) > 0;
+
+        const existing = latestFrames.get(cameraId) || {};
+        latestFrames.set(cameraId, {
+          ...existing,
+          buffer: req.file.buffer,
+          timestamp: nowTs,
+          hasHippo,
+          hippoDetection,
+        });
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Unexpected error during hippo inference on live-frame', err);
     }
 
     // Actualizar métricas de la sesión en la base de datos

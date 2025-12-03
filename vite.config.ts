@@ -59,5 +59,16 @@
       proxy: {
         '/api': 'http://localhost:3001',
       },
+      // Evitamos que Vite/esbuild intenten vigilar decenas de miles de ficheros
+      // del dataset de YOLO, lo que dispara el límite de "file watchers" (ENOSPC).
+      watch: {
+        // Ignoramos TODO el árbol de YOLO y también uploads para que
+        // Vite/esbuild no intenten poner watchers sobre decenas de miles
+        // de ficheros (lo que dispara ENOSPC).
+        ignored: [
+          '**/yolo/**',
+          '**/uploads/**',
+        ],
+      },
     },
   });
